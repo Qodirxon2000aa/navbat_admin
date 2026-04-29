@@ -28,19 +28,66 @@ export default function App() {
   }, []);
 
   const saveServices = async () => {
-    const response = await fetch(`${API_URL}/services`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ services })
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      setMessage(data.message || "Xatolik");
+    try {
+      const payload = services.map((service) => ({
+        id: String(service.id || "").trim(),
+        name: String(service.name || "").trim(),
+        section: String(service.section || "").trim().toUpperCase(),
+        price: Number(service.price || 0)
+      }));
+
+      const hasInvalid = payload.some(
+        (service) => !service.id || !service.name || !service.section || Number.isNaN(service.price)
+      );
+      if (hasInvalid) {
+        window.alert("Xizmat maydonlarini to'liq to'ldiring (id, nomi, bo'lim, narx).");
+        return;
+      }
+
+      const response = await fetch(`${API_URL}/services`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ services: payload })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setMessage(data.message || "Xatolik");
+        window.alert(data.message || "Xizmatlarni saqlashda xatolik");
+        return;
+      }
+      setServices(data.services);
+      setMessage("Xizmatlar saqlandi");
+      window.alert("Xizmatlar muvaffaqiyatli saqlandi.");
+    } catch (_error) {
+      setMessage("Xizmatlarni saqlashda server xatoligi");
+      window.alert("Xizmatlarni saqlashda server xatoligi");
+    }
+  };
+  const addService = () => {
+    const normalized = {
+      id: String(newService.id || "").trim(),
+      name: String(newService.name || "").trim(),
+      section: String(newService.section || "").trim().toUpperCase(),
+      price: Number(newService.price || 0)
+    };
+
+    if (!normalized.id || !normalized.name || !normalized.section || Number.isNaN(normalized.price)) {
+      window.alert("Yangi xizmat uchun barcha maydonlarni to'ldiring.");
       return;
     }
-    setServices(data.services);
-    setMessage("Xizmatlar saqlandi");
+
+    const duplicated = services.some(
+      (service) => String(service.id || "").trim().toLowerCase() === normalized.id.toLowerCase()
+    );
+    if (duplicated) {
+      window.alert("Bu ID bilan xizmat allaqachon mavjud.");
+      return;
+    }
+
+    setServices([...services, normalized]);
+    setNewService({ ...emptyService });
   };
+
 
   const savePrinter = async () => {
     const trimmedTarget = String(printerTarget || "").trim();
@@ -214,10 +261,7 @@ export default function App() {
             />
             <button
               className="px-3 bg-teal-500 text-black rounded"
-              onClick={() => {
-                setServices([...services, newService]);
-                setNewService(emptyService);
-              }}
+              onClick={addService}
             >
               Qo'sh
             </button>
