@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-const API_URL = import.meta.env.VITE_API_URL || "https://xmaster.nodirkhanov.uz/api/admin";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5001/api/admin";
 
 const emptyService = { id: "", name: "", section: "", price: 0 };
 
