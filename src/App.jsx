@@ -106,6 +106,7 @@ const PAGES = {
   services: "services",
   departments: "departments",
   reports: "reports",
+  settings: "settings",
   control: "control"
 };
 
@@ -126,6 +127,7 @@ export default function App() {
   const [reportToDate, setReportToDate] = useState("");
   const [reportData, setReportData] = useState(null);
   const [isReportLoading, setIsReportLoading] = useState(false);
+  const [isSyncingAtlas, setIsSyncingAtlas] = useState(false);
 
   const isZbPrinter = (value) => String(value || "").toLowerCase().includes("zb");
 
@@ -558,6 +560,23 @@ export default function App() {
     }
   };
 
+  const syncAtlasFromSettings = async () => {
+    setIsSyncingAtlas(true);
+    try {
+      const response = await fetch(`${API_URL}/sync-atlas`, { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Atlas sync bajarilmadi");
+        return;
+      }
+      window.alert(data.message || "Atlas sync muvaffaqiyatli bajarildi");
+    } catch (_error) {
+      window.alert("Server bilan aloqa yo'q");
+    } finally {
+      setIsSyncingAtlas(false);
+    }
+  };
+
   const navBtn = (id, label) => (
     <button
       type="button"
@@ -584,6 +603,7 @@ export default function App() {
           {navBtn(PAGES.services, "Xizmatlar")}
           {navBtn(PAGES.departments, "Bo'limlar")}
           {navBtn(PAGES.reports, "Hisobot")}
+          {navBtn(PAGES.settings, "Sozlamalar")}
           {navBtn(PAGES.control, "Boshqaruv")}
         </div>
       </aside>
@@ -596,6 +616,8 @@ export default function App() {
               ? "Bo'limlar"
               : activePage === PAGES.reports
                 ? "Hisobot"
+                : activePage === PAGES.settings
+                  ? "Sozlamalar"
               : "Boshqaruv"}
         </h1>
         <p className="text-xs text-white/45 mb-6">
@@ -605,6 +627,8 @@ export default function App() {
               ? "Har klinika bo'limi uchun shifokor shabloni. Keyin xizmat qo'shishda shu bo'limni tanlasangiz, maydonlar o'zi to'ldiriladi."
               : activePage === PAGES.reports
                 ? "Ikki sana oralig'ida bo'limlar kesimidagi navbat soni va tushumni ko'ring."
+                : activePage === PAGES.settings
+                  ? "Lokal bazadagi ma'lumotlarni Atlas'ga qo'lda sync qilish."
               : "Navbat holati, chaqirish va printer sozlamalari."}
         </p>
         {message ? <p className="mb-4 text-teal-300 text-sm">{message}</p> : null}
@@ -1061,6 +1085,23 @@ export default function App() {
                 </div>
               </>
             ) : null}
+          </section>
+        ) : null}
+
+        {activePage === PAGES.settings ? (
+          <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6">
+            <h2 className="text-lg font-semibold text-white mb-2">Atlas sync</h2>
+            <p className="text-sm text-white/60 mb-5">
+              Internet mavjud bo'lsa, Compass (lokal MongoDB) dagi joriy holat Atlas bazaga yuboriladi.
+            </p>
+            <button
+              type="button"
+              onClick={syncAtlasFromSettings}
+              disabled={isSyncingAtlas}
+              className="px-5 py-2.5 rounded bg-teal-500 text-black font-bold text-sm disabled:opacity-60"
+            >
+              {isSyncingAtlas ? "Sync qilinmoqda..." : "Sync qilish"}
+            </button>
           </section>
         ) : null}
 
