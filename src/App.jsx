@@ -105,6 +105,7 @@ const uploadDoctorPhotoFile = async (file) => {
 const PAGES = {
   services: "services",
   departments: "departments",
+  reports: "reports",
   control: "control"
 };
 
@@ -121,6 +122,10 @@ export default function App() {
   const [printers, setPrinters] = useState([]);
   const [selectedPrinterUri, setSelectedPrinterUri] = useState("");
   const [message, setMessage] = useState("");
+  const [reportFromDate, setReportFromDate] = useState("");
+  const [reportToDate, setReportToDate] = useState("");
+  const [reportData, setReportData] = useState(null);
+  const [isReportLoading, setIsReportLoading] = useState(false);
 
   const isZbPrinter = (value) => String(value || "").toLowerCase().includes("zb");
 
@@ -479,6 +484,80 @@ export default function App() {
     );
   };
 
+  const fetchReport = async () => {
+    if (!reportFromDate || !reportToDate) {
+      window.alert("Boshlanish va tugash sanasini kiriting.");
+      return;
+    }
+    setIsReportLoading(true);
+    try {
+      const response = await fetch(
+        `${API_URL}/reports?fromDate=${encodeURIComponent(reportFromDate)}&toDate=${encodeURIComponent(reportToDate)}`,
+        { cache: "no-store" }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        window.alert(data.message || "Hisobotni olishda xatolik");
+        return;
+      }
+      setReportData(data);
+    } catch (_error) {
+      window.alert("Hisobotni olishda server xatoligi");
+    } finally {
+      setIsReportLoading(false);
+    }
+  };
+
+  const printReportRow = async (row) => {
+    if (!row) return;
+    try {
+      const response = await fetch(`${API_URL}/reports/print`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reportRow: row,
+          fromDate: reportFromDate,
+          toDate: reportToDate
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Hisobot chekini chiqarishda xatolik");
+        return;
+      }
+      window.alert("Hisobot cheki printerga yuborildi.");
+    } catch (_error) {
+      window.alert("Printer bilan aloqa xatoligi");
+    }
+  };
+
+  const printReportSummary = async () => {
+    if (!reportData?.rows?.length) {
+      window.alert("Avval hisobotni chiqarib oling.");
+      return;
+    }
+    try {
+      const response = await fetch(`${API_URL}/reports/print-total`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rows: reportData.rows,
+          summary: reportData.summary,
+          fromDate: reportFromDate,
+          toDate: reportToDate
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Umumiy chekni chiqarishda xatolik");
+        return;
+      }
+      window.alert("Umumiy hisobot cheki printerga yuborildi.");
+    } catch (_error) {
+      window.alert("Printer bilan aloqa xatoligi");
+    }
+  };
+
   const navBtn = (id, label) => (
     <button
       type="button"
@@ -504,6 +583,7 @@ export default function App() {
         <div className="flex md:flex-col flex-1 gap-2 md:gap-1 md:flex-1 min-w-0">
           {navBtn(PAGES.services, "Xizmatlar")}
           {navBtn(PAGES.departments, "Bo'limlar")}
+          {navBtn(PAGES.reports, "Hisobot")}
           {navBtn(PAGES.control, "Boshqaruv")}
         </div>
       </aside>
@@ -514,6 +594,8 @@ export default function App() {
             ? "Xizmatlar"
             : activePage === PAGES.departments
               ? "Bo'limlar"
+              : activePage === PAGES.reports
+                ? "Hisobot"
               : "Boshqaruv"}
         </h1>
         <p className="text-xs text-white/45 mb-6">
@@ -521,6 +603,8 @@ export default function App() {
             ? "Bo'limlar jadvali: xona va narxni tahrirlang yoki modal orqali yangi xizmat qo'shing."
             : activePage === PAGES.departments
               ? "Har klinika bo'limi uchun shifokor shabloni. Keyin xizmat qo'shishda shu bo'limni tanlasangiz, maydonlar o'zi to'ldiriladi."
+              : activePage === PAGES.reports
+                ? "Ikki sana oralig'ida bo'limlar kesimidagi navbat soni va tushumni ko'ring."
               : "Navbat holati, chaqirish va printer sozlamalari."}
         </p>
         {message ? <p className="mb-4 text-teal-300 text-sm">{message}</p> : null}
@@ -888,6 +972,96 @@ export default function App() {
           Bo'limlarni saqlash
         </button>
       </section>
+        ) : null}
+
+        {activePage === PAGES.reports ? (
+          <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <input
+                type="date"
+                className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                value={reportFromDate}
+                onChange={(e) => setReportFromDate(e.target.value)}
+              />
+              <input
+                type="date"
+                className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                value={reportToDate}
+                onChange={(e) => setReportToDate(e.target.value)}
+              />
+              <button
+                type="button"
+                className="px-4 py-2 bg-teal-500 text-black rounded font-bold"
+                onClick={fetchReport}
+                disabled={isReportLoading}
+              >
+                {isReportLoading ? "Yuklanmoqda..." : "Hisobotni ko'rsatish"}
+              </button>
+            </div>
+
+            {reportData ? (
+              <>
+                <div className="mt-5 text-sm text-white/80 flex flex-wrap gap-5 items-center">
+                  <p>
+                    Jami navbatlar:{" "}
+                    <strong className="text-teal-300">{reportData?.summary?.totalTickets ?? 0}</strong>
+                  </p>
+                  <p>
+                    Jami tushum:{" "}
+                    <strong className="text-teal-300">
+                      {Number(reportData?.summary?.totalRevenue || 0).toLocaleString("uz-UZ")} so'm
+                    </strong>
+                  </p>
+                  <button
+                    type="button"
+                    className="px-4 py-2 rounded bg-teal-500 text-black text-xs font-black uppercase tracking-wide"
+                    onClick={printReportSummary}
+                  >
+                    Umumiy chekni chiqarish
+                  </button>
+                </div>
+
+                <div className="mt-4 overflow-x-auto rounded-xl border border-white/10">
+                  <table className="min-w-full border-collapse text-sm">
+                    <thead className="bg-white/5 text-white/70">
+                      <tr>
+                        <th className="border-b border-white/10 px-4 py-3 text-left font-semibold">Bo'lim kodi</th>
+                        <th className="border-b border-white/10 px-4 py-3 text-left font-semibold">Bo'lim nomi</th>
+                        <th className="border-b border-white/10 px-4 py-3 text-left font-semibold">Shifokor</th>
+                        <th className="border-b border-white/10 px-4 py-3 text-left font-semibold">Navbatlar</th>
+                        <th className="border-b border-white/10 px-4 py-3 text-left font-semibold">Tushum</th>
+                        <th className="border-b border-white/10 px-4 py-3 text-left font-semibold">Chek</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(reportData.rows || []).map((row) => (
+                        <tr key={`${row.section}-${row.serviceId}`} className="odd:bg-black/20 even:bg-black/10">
+                          <td className="border-b border-white/10 px-4 py-3 font-mono">{row.section || "-"}</td>
+                          <td className="border-b border-white/10 px-4 py-3">{row.service || "-"}</td>
+                          <td className="border-b border-white/10 px-4 py-3">
+                            {[row.doctorFirstName, row.doctorLastName].filter(Boolean).join(" ") || "-"}
+                          </td>
+                          <td className="border-b border-white/10 px-4 py-3 font-bold">{row.totalTickets}</td>
+                          <td className="border-b border-white/10 px-4 py-3 text-teal-300 font-bold">
+                            {Number(row.totalRevenue || 0).toLocaleString("uz-UZ")} so'm
+                          </td>
+                          <td className="border-b border-white/10 px-4 py-3">
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 rounded bg-teal-500 text-black text-xs font-bold"
+                              onClick={() => printReportRow(row)}
+                            >
+                              Chek chiqarish
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : null}
+          </section>
         ) : null}
 
         {activePage === PAGES.control ? (
