@@ -20,7 +20,6 @@ const emptyService = {
   price: 0,
   doctorFirstName: "",
   doctorLastName: "",
-  doctorPhone: "",
   doctorPhotoUrl: ""
 };
 
@@ -29,7 +28,6 @@ const emptyDepartment = {
   title: "",
   doctorFirstName: "",
   doctorLastName: "",
-  doctorPhone: "",
   doctorPhotoUrl: ""
 };
 
@@ -65,7 +63,6 @@ const mergeDoctorFromDepartment = (row, dept) => {
     id: hadId ? row.id : slugServiceId(dept.section),
     doctorFirstName: dept.doctorFirstName,
     doctorLastName: dept.doctorLastName,
-    doctorPhone: dept.doctorPhone,
     doctorPhotoUrl: dept.doctorPhotoUrl
   };
 };
@@ -166,7 +163,6 @@ export default function App() {
           if (
             cur.doctorFirstName !== merged.doctorFirstName ||
             cur.doctorLastName !== merged.doctorLastName ||
-            cur.doctorPhone !== merged.doctorPhone ||
             cur.doctorPhotoUrl !== merged.doctorPhotoUrl ||
             cur.name !== merged.name ||
             cur.section !== merged.section
@@ -247,7 +243,6 @@ export default function App() {
           : 0,
         doctorFirstName: String(service.doctorFirstName || "").trim(),
         doctorLastName: String(service.doctorLastName || "").trim(),
-        doctorPhone: String(service.doctorPhone || "").trim(),
         doctorPhotoUrl: String(service.doctorPhotoUrl || "").trim()
       }));
 
@@ -261,12 +256,11 @@ export default function App() {
           service.price <= 0 ||
           !service.doctorFirstName ||
           !service.doctorLastName ||
-          !service.doctorPhone ||
           !service.doctorPhotoUrl
       );
       if (hasInvalid) {
         window.alert(
-          "Har bir xizmat uchun to'liq ma'lumot: id, nom, bo'lim, xona raqami, narx (so'm), shifokor (ism, familiya, telefon, JPG/PNG rasm)."
+          "Har bir xizmat uchun to'liq ma'lumot: id, nom, bo'lim, xona raqami, narx (so'm), shifokor (ism, familiya, JPG/PNG rasm)."
         );
         return;
       }
@@ -334,7 +328,6 @@ export default function App() {
         title: String(d.title || "").trim(),
         doctorFirstName: String(d.doctorFirstName || "").trim(),
         doctorLastName: String(d.doctorLastName || "").trim(),
-        doctorPhone: String(d.doctorPhone || "").trim(),
         doctorPhotoUrl: String(d.doctorPhotoUrl || "").trim()
       }));
 
@@ -343,12 +336,11 @@ export default function App() {
           !d.section ||
           !d.doctorFirstName ||
           !d.doctorLastName ||
-          !d.doctorPhone ||
           !d.doctorPhotoUrl
       );
       if (bad) {
         window.alert(
-          "Har bir bo'lim uchun: bo'lim kodi, shifokor ism/familiya/telefon va rasm to'liq bo'lishi kerak."
+          "Har bir bo'lim uchun: bo'lim kodi, shifokor ism/familiya va rasm to'liq bo'lishi kerak."
         );
         return;
       }
@@ -388,17 +380,15 @@ export default function App() {
       title: String(newDepartment.title || "").trim(),
       doctorFirstName: String(newDepartment.doctorFirstName || "").trim(),
       doctorLastName: String(newDepartment.doctorLastName || "").trim(),
-      doctorPhone: String(newDepartment.doctorPhone || "").trim(),
       doctorPhotoUrl: String(newDepartment.doctorPhotoUrl || "").trim()
     };
     if (
       !normalized.section ||
       !normalized.doctorFirstName ||
       !normalized.doctorLastName ||
-      !normalized.doctorPhone ||
       !normalized.doctorPhotoUrl
     ) {
-      window.alert("Yangi bo'lim uchun barcha maydonlarni to'ldiring (kod, shifokor, rasm).");
+      window.alert("Yangi bo'lim uchun kod, shifokor ism/familiya va rasmni to'ldiring.");
       return;
     }
     if (departments.some((d) => String(d.section).toUpperCase() === normalized.section)) {
@@ -746,7 +736,7 @@ export default function App() {
                 />
               </div>
               <p className="text-xs text-white/50 uppercase tracking-wide">Bo'lim shifokori</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <input
                   className="bg-black/40 border border-white/10 rounded px-3 py-2"
                   value={dept.doctorFirstName || ""}
@@ -766,16 +756,6 @@ export default function App() {
                     setDepartments(copy);
                   }}
                   placeholder="Familiya"
-                />
-                <input
-                  className="bg-black/40 border border-white/10 rounded px-3 py-2"
-                  value={dept.doctorPhone || ""}
-                  onChange={(e) => {
-                    const copy = [...departments];
-                    copy[index].doctorPhone = e.target.value;
-                    setDepartments(copy);
-                  }}
-                  placeholder="Telefon"
                 />
               </div>
               <div className="flex flex-wrap items-center gap-3">
@@ -853,7 +833,7 @@ export default function App() {
               placeholder="Bo'lim nomi (ixtiyoriy)"
             />
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <input
               className="bg-black/40 border border-white/10 rounded px-3 py-2"
               value={newDepartment.doctorFirstName}
@@ -865,12 +845,6 @@ export default function App() {
               value={newDepartment.doctorLastName}
               onChange={(e) => setNewDepartment({ ...newDepartment, doctorLastName: e.target.value })}
               placeholder="Familiya"
-            />
-            <input
-              className="bg-black/40 border border-white/10 rounded px-3 py-2"
-              value={newDepartment.doctorPhone}
-              onChange={(e) => setNewDepartment({ ...newDepartment, doctorPhone: e.target.value })}
-              placeholder="Telefon"
             />
           </div>
           <div className="flex flex-wrap items-center gap-3">
