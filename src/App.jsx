@@ -144,6 +144,27 @@ export default function App() {
     fetchConfig();
   }, []);
 
+  useEffect(() => {
+    const events = new EventSource(`${PUBLIC_API_URL}/events`);
+    const refreshByPage = () => {
+      fetchConfig();
+      if (activePage === PAGES.control) {
+        fetchQueueSnapshot();
+      }
+      if (activePage === PAGES.reports && reportFromDate && reportToDate) {
+        fetchReport();
+      }
+    };
+
+    events.addEventListener("state-updated", refreshByPage);
+    events.onerror = () => {
+      // keep admin data reasonably fresh even if SSE reconnects.
+      fetchConfig();
+    };
+
+    return () => events.close();
+  }, [activePage, reportFromDate, reportToDate]);
+
   /** Har «Bo'lim» uchun bitta xizmat qatori; shifokor ma'lumotlari bo'limdan keladi. */
   useEffect(() => {
     if (!departments.length) return;
@@ -197,8 +218,7 @@ export default function App() {
   useEffect(() => {
     if (activePage !== PAGES.control) return undefined;
     fetchQueueSnapshot();
-    const id = setInterval(fetchQueueSnapshot, 5000);
-    return () => clearInterval(id);
+    return undefined;
   }, [activePage]);
 
   const callNextForService = async (serviceId) => {
