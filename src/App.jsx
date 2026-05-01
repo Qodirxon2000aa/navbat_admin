@@ -28,6 +28,8 @@ const emptyDepartment = {
   title: "",
   doctorFirstName: "",
   doctorLastName: "",
+  doctorLogin: "",
+  doctorPassword: "",
   doctorPhotoUrl: ""
 };
 
@@ -237,27 +239,6 @@ export default function App() {
     }
   };
 
-  const clearAllQueues = async () => {
-    if (
-      !window.confirm(
-        "Barcha bo'limlardagi navbat, joriy chaqiruv va bugungi hisoblagichlarni tozalaysizmi? (Raqamlar nolga tushadi.)"
-      )
-    ) {
-      return;
-    }
-    try {
-      const response = await fetch(`${PUBLIC_API_URL}/queues`, { method: "DELETE" });
-      if (!response.ok) {
-        window.alert("Tozalashda xatolik");
-        return;
-      }
-      await fetchQueueSnapshot();
-      window.alert("Navbatlar tozalandi.");
-    } catch (_e) {
-      window.alert("Server bilan aloqa yo'q");
-    }
-  };
-
   const saveServices = async () => {
     try {
       const payload = services.map((service) => ({
@@ -355,6 +336,8 @@ export default function App() {
         title: String(d.title || "").trim(),
         doctorFirstName: String(d.doctorFirstName || "").trim(),
         doctorLastName: String(d.doctorLastName || "").trim(),
+        doctorLogin: String(d.doctorLogin || "").trim(),
+        doctorPassword: String(d.doctorPassword || "").trim(),
         doctorPhotoUrl: String(d.doctorPhotoUrl || "").trim()
       }));
 
@@ -407,6 +390,8 @@ export default function App() {
       title: String(newDepartment.title || "").trim(),
       doctorFirstName: String(newDepartment.doctorFirstName || "").trim(),
       doctorLastName: String(newDepartment.doctorLastName || "").trim(),
+      doctorLogin: String(newDepartment.doctorLogin || "").trim(),
+      doctorPassword: String(newDepartment.doctorPassword || "").trim(),
       doctorPhotoUrl: String(newDepartment.doctorPhotoUrl || "").trim()
     };
     if (
@@ -886,6 +871,28 @@ export default function App() {
                   placeholder="Familiya"
                 />
               </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <input
+                  className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                  value={dept.doctorLogin || ""}
+                  onChange={(e) => {
+                    const copy = [...departments];
+                    copy[index].doctorLogin = e.target.value;
+                    setDepartments(copy);
+                  }}
+                  placeholder="Doktor login (bo'sh bo'lsa auto)"
+                />
+                <input
+                  className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                  value={dept.doctorPassword || ""}
+                  onChange={(e) => {
+                    const copy = [...departments];
+                    copy[index].doctorPassword = e.target.value;
+                    setDepartments(copy);
+                  }}
+                  placeholder="Doktor parol (bo'sh bo'lsa auto)"
+                />
+              </div>
               <div className="flex flex-wrap items-center gap-3">
                 {dept.doctorPhotoUrl ? (
                   <img
@@ -973,6 +980,20 @@ export default function App() {
               value={newDepartment.doctorLastName}
               onChange={(e) => setNewDepartment({ ...newDepartment, doctorLastName: e.target.value })}
               placeholder="Familiya"
+            />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <input
+              className="bg-black/40 border border-white/10 rounded px-3 py-2"
+              value={newDepartment.doctorLogin}
+              onChange={(e) => setNewDepartment({ ...newDepartment, doctorLogin: e.target.value })}
+              placeholder="Doktor login (ixtiyoriy)"
+            />
+            <input
+              className="bg-black/40 border border-white/10 rounded px-3 py-2"
+              value={newDepartment.doctorPassword}
+              onChange={(e) => setNewDepartment({ ...newDepartment, doctorPassword: e.target.value })}
+              placeholder="Doktor parol (ixtiyoriy)"
             />
           </div>
           <div className="flex flex-wrap items-center gap-3">
@@ -1145,13 +1166,6 @@ export default function App() {
               onClick={() => fetchQueueSnapshot()}
             >
               Yangilash
-            </button>
-            <button
-              type="button"
-              className="px-3 py-2 rounded bg-red-500/20 text-sm text-red-200 border border-red-500/30"
-              onClick={clearAllQueues}
-            >
-              Barcha navbatni tozalash
             </button>
           </div>
         </div>
