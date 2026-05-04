@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resolveDoctorPhotoUrl } from "./utils/resolveDoctorPhotoUrl.js";
 
 const RAW_API_URL = import.meta.env.VITE_API_URL || "http://localhost:5001/api";
@@ -80,6 +80,45 @@ const formatPriceDisplay = (n) => {
   return num.toLocaleString("uz-UZ", { maximumFractionDigits: 0 });
 };
 
+const formatReportDateTime = (iso, timeZone) => {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleString("uz-UZ", {
+      timeZone: timeZone || "Asia/Tashkent",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  } catch {
+    return "—";
+  }
+};
+
+const formatDoctorFromRow = (row) => {
+  const full = [row?.doctorFirstName, row?.doctorLastName].filter(Boolean).join(" ").trim();
+  return full || "—";
+};
+
+const buildTicketFromOrderRow = (row) => ({
+  id: row.ticketId,
+  createdAt: row.createdAt,
+  departmentNumber: row.departmentNumber,
+  serviceId: row.serviceId,
+  service: row.service,
+  section: row.section,
+  price: row.price,
+  roomNumber: row.roomNumber || "",
+  doctorFirstName: row.doctorFirstName || "",
+  doctorLastName: row.doctorLastName || "",
+  doctorPhone: row.doctorPhone || "",
+  patientFirstName: row.patientFirstName || "",
+  patientLastName: row.patientLastName || "",
+  patientPhone: row.patientPhone || ""
+});
+
 const parsePriceDigits = (str) => {
   const d = String(str).replace(/\D/g, "");
   if (d === "") return 0;
@@ -108,12 +147,78 @@ const PAGES = {
   services: "services",
   departments: "departments",
   reports: "reports",
+  orders: "orders",
+  patients: "patients",
   settings: "settings",
   control: "control"
 };
 
+/** Sidebar: stroke ikonalar, currentColor */
+const NavIcon = ({ children, className = "h-5 w-5 shrink-0 opacity-90" }) => (
+  <svg
+    className={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.75"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    {children}
+  </svg>
+);
+
+const IconControl = () => (
+  <NavIcon>
+    <rect x="3" y="3" width="7" height="9" rx="1" />
+    <rect x="14" y="3" width="7" height="5" rx="1" />
+    <rect x="14" y="12" width="7" height="9" rx="1" />
+    <rect x="3" y="16" width="7" height="5" rx="1" />
+  </NavIcon>
+);
+const IconOrders = () => (
+  <NavIcon>
+    <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+    <path d="M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2z" />
+    <path d="M9 12h6M9 16h6" />
+  </NavIcon>
+);
+const IconPatients = () => (
+  <NavIcon>
+    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+    <circle cx="9" cy="7" r="4" />
+    <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+  </NavIcon>
+);
+const IconReports = () => (
+  <NavIcon>
+    <path d="M3 3v18h18" />
+    <path d="M7 16l4-4 4 4 5-7" />
+  </NavIcon>
+);
+const IconDepartments = () => (
+  <NavIcon>
+    <path d="M3 21h18" />
+    <path d="M6 21V8h4V21M14 21V4h4v17" />
+  </NavIcon>
+);
+const IconServices = () => (
+  <NavIcon>
+    <path d="M8 7V5a4 4 0 0 1 8 0v2" />
+    <path d="M4 9a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9z" />
+    <path d="M12 12v3" />
+  </NavIcon>
+);
+const IconSettings = () => (
+  <NavIcon>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+  </NavIcon>
+);
+
 export default function App() {
-  const [activePage, setActivePage] = useState(PAGES.services);
+  const [activePage, setActivePage] = useState(PAGES.control);
   const [services, setServices] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [newService, setNewService] = useState(emptyService);
@@ -129,6 +234,16 @@ export default function App() {
   const [reportToDate, setReportToDate] = useState("");
   const [reportData, setReportData] = useState(null);
   const [isReportLoading, setIsReportLoading] = useState(false);
+  const [ordersLogData, setOrdersLogData] = useState(null);
+  const [isOrdersLogLoading, setIsOrdersLogLoading] = useState(false);
+  const [ordersLogLimit, setOrdersLogLimit] = useState(12000);
+  const [printingOrderTicketId, setPrintingOrderTicketId] = useState(null);
+  const [patientsData, setPatientsData] = useState(null);
+  const [isPatientsLoading, setIsPatientsLoading] = useState(false);
+  const [patientsScanLimit, setPatientsScanLimit] = useState(20000);
+  const [expandedPatientKey, setExpandedPatientKey] = useState(null);
+  const [patientsFilterFirstName, setPatientsFilterFirstName] = useState("");
+  const [patientsFilterLastName, setPatientsFilterLastName] = useState("");
   const [isSyncingAtlas, setIsSyncingAtlas] = useState(false);
 
   const isZbPrinter = (value) => String(value || "").toLowerCase().includes("zb");
@@ -146,6 +261,86 @@ export default function App() {
     fetchConfig();
   }, []);
 
+  const fetchOrdersLog = useCallback(async () => {
+    setIsOrdersLogLoading(true);
+    try {
+      const response = await fetch(
+        `${API_URL}/orders-log?limit=${encodeURIComponent(ordersLogLimit)}`,
+        { cache: "no-store" }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        window.alert(data.message || "Buyurtmalar ro'yxatini olishda xatolik");
+        return;
+      }
+      setOrdersLogData(data);
+    } catch (_error) {
+      window.alert("Buyurtmalar: server bilan aloqa xatoligi");
+    } finally {
+      setIsOrdersLogLoading(false);
+    }
+  }, [ordersLogLimit]);
+
+  const fetchOrdersLogRef = useRef(fetchOrdersLog);
+  fetchOrdersLogRef.current = fetchOrdersLog;
+
+  const fetchPatients = useCallback(async () => {
+    setIsPatientsLoading(true);
+    try {
+      const response = await fetch(
+        `${API_URL}/patients?limit=${encodeURIComponent(patientsScanLimit)}`,
+        { cache: "no-store" }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        window.alert(data.message || "Bemorlar ro'yxatini olishda xatolik");
+        return;
+      }
+      setPatientsData(data);
+    } catch (_error) {
+      window.alert("Bemorlar: server bilan aloqa xatoligi");
+    } finally {
+      setIsPatientsLoading(false);
+    }
+  }, [patientsScanLimit]);
+
+  const fetchPatientsRef = useRef(fetchPatients);
+  fetchPatientsRef.current = fetchPatients;
+
+  const patientsFiltered = useMemo(() => {
+    const list = patientsData?.patients || [];
+    const qFn = String(patientsFilterFirstName || "").trim().toLowerCase();
+    const qLn = String(patientsFilterLastName || "").trim().toLowerCase();
+    if (!qFn && !qLn) return list;
+    return list.filter((p) => {
+      const fn = String(p.patientFirstName || "").toLowerCase();
+      const ln = String(p.patientLastName || "").toLowerCase();
+      if (qFn && !fn.includes(qFn)) return false;
+      if (qLn && !ln.includes(qLn)) return false;
+      return true;
+    });
+  }, [patientsData, patientsFilterFirstName, patientsFilterLastName]);
+
+  useEffect(() => {
+    if (!expandedPatientKey) return undefined;
+    if (!patientsFiltered.some((p) => p.groupKey === expandedPatientKey)) {
+      setExpandedPatientKey(null);
+    }
+    return undefined;
+  }, [patientsFiltered, expandedPatientKey]);
+
+  useEffect(() => {
+    if (activePage !== PAGES.orders) return undefined;
+    void fetchOrdersLog();
+    return undefined;
+  }, [activePage, ordersLogLimit, fetchOrdersLog]);
+
+  useEffect(() => {
+    if (activePage !== PAGES.patients) return undefined;
+    void fetchPatients();
+    return undefined;
+  }, [activePage, patientsScanLimit, fetchPatients]);
+
   useEffect(() => {
     const events = new EventSource(`${PUBLIC_API_URL}/events`);
     const refreshByPage = () => {
@@ -155,6 +350,12 @@ export default function App() {
       }
       if (activePage === PAGES.reports && reportFromDate && reportToDate) {
         fetchReport();
+      }
+      if (activePage === PAGES.orders) {
+        void fetchOrdersLogRef.current();
+      }
+      if (activePage === PAGES.patients) {
+        void fetchPatientsRef.current();
       }
     };
 
@@ -565,6 +766,30 @@ export default function App() {
     }
   };
 
+  const printOrderTicket = async (row) => {
+    const tid = row?.ticketId;
+    if (!tid) return;
+    setPrintingOrderTicketId(tid);
+    try {
+      const ticket = buildTicketFromOrderRow(row);
+      const response = await fetch(`${PUBLIC_API_URL}/printer/print-ticket`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Chekni chiqarishda xatolik");
+        return;
+      }
+      window.alert(data.message || "Chek printerga yuborildi.");
+    } catch (_e) {
+      window.alert("Printer yoki server bilan aloqa xatoligi");
+    } finally {
+      setPrintingOrderTicketId(null);
+    }
+  };
+
   const syncAtlasFromSettings = async () => {
     setIsSyncingAtlas(true);
     try {
@@ -582,38 +807,41 @@ export default function App() {
     }
   };
 
-  const navBtn = (id, label) => (
+  const navBtn = (id, label, Icon) => (
     <button
       type="button"
       onClick={() => setActivePage(id)}
-      className={`w-full text-left rounded-lg px-3 py-2.5 text-sm font-semibold transition-colors ${
+      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold transition-colors ${
         activePage === id
           ? "bg-teal-500 text-black"
           : "text-white/70 hover:bg-white/10 hover:text-white"
       }`}
     >
-      {label}
+      {Icon ? <Icon /> : null}
+      <span className="min-w-0 leading-snug">{label}</span>
     </button>
   );
 
   return (
-    <div className="min-h-screen flex flex-col md:flex-row bg-[#0a0a0b]">
-      <aside className="shrink-0 border-b md:border-b-0 md:border-r border-white/10 bg-black/50 md:w-56 p-3 md:p-4 flex flex-row md:flex-col gap-2 md:gap-1 items-center md:items-stretch">
+    <div className="flex h-dvh max-h-dvh min-h-0 w-full flex-col overflow-hidden bg-[#0a0a0b] md:flex-row">
+      <aside className="flex w-full shrink-0 flex-row items-center gap-2 overflow-x-auto border-b border-white/10 bg-black/50 p-3 md:w-56 md:flex-col md:items-stretch md:gap-1 md:overflow-x-visible md:overflow-y-auto md:border-b-0 md:border-r md:p-4">
         <div className="hidden md:block mb-6 pr-2">
           <p className="text-[10px] uppercase tracking-[0.2em] text-white/40 mb-1">Sherdor</p>
           <p className="text-lg font-bold text-white leading-tight">Admin</p>
         </div>
         <p className="md:hidden text-xs font-bold text-white/90 shrink-0 w-14">Admin</p>
         <div className="flex md:flex-col flex-1 gap-2 md:gap-1 md:flex-1 min-w-0">
-          {navBtn(PAGES.services, "Xizmatlar")}
-          {navBtn(PAGES.departments, "Bo'limlar")}
-          {navBtn(PAGES.reports, "Hisobot")}
-          {navBtn(PAGES.settings, "Sozlamalar")}
-          {navBtn(PAGES.control, "Boshqaruv")}
+          {navBtn(PAGES.control, "Boshqaruv", IconControl)}
+          {navBtn(PAGES.orders, "Buyurtmalar", IconOrders)}
+          {navBtn(PAGES.patients, "Bemorlar", IconPatients)}
+          {navBtn(PAGES.reports, "Hisobot", IconReports)}
+          {navBtn(PAGES.departments, "Bo'limlar", IconDepartments)}
+          {navBtn(PAGES.services, "Xizmatlar", IconServices)}
+          {navBtn(PAGES.settings, "Sozlamalar", IconSettings)}
         </div>
       </aside>
 
-      <main className="flex-1 min-h-0 overflow-y-auto p-5 md:p-8 max-w-5xl w-full mx-auto">
+      <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain p-5 md:p-8 max-w-5xl w-full mx-auto">
         <h1 className="text-2xl md:text-3xl font-bold mb-2 text-white">
           {activePage === PAGES.services
             ? "Xizmatlar"
@@ -621,9 +849,13 @@ export default function App() {
               ? "Bo'limlar"
               : activePage === PAGES.reports
                 ? "Hisobot"
-                : activePage === PAGES.settings
-                  ? "Sozlamalar"
-              : "Boshqaruv"}
+                : activePage === PAGES.orders
+                  ? "Buyurtmalar"
+                  : activePage === PAGES.patients
+                    ? "Bemorlar"
+                    : activePage === PAGES.settings
+                    ? "Sozlamalar"
+                    : "Boshqaruv"}
         </h1>
         <p className="text-xs text-white/45 mb-6">
           {activePage === PAGES.services
@@ -631,10 +863,14 @@ export default function App() {
             : activePage === PAGES.departments
               ? "Har klinika bo'limi uchun shifokor shabloni. Keyin xizmat qo'shishda shu bo'limni tanlasangiz, maydonlar o'zi to'ldiriladi."
               : activePage === PAGES.reports
-                ? "Ikki sana oralig'ida bo'limlar kesimidagi navbat soni va tushumni ko'ring."
-                : activePage === PAGES.settings
-                  ? "Lokal bazadagi ma'lumotlarni Atlas'ga qo'lda sync qilish."
-              : "Navbat holati, chaqirish va printer sozlamalari."}
+                ? "Ikki sana oralig'ida bo'limlar bo'yicha yig'ma va har bir berilgan chek: bemor, telefon, sana va soat."
+                : activePage === PAGES.orders
+                  ? "Barcha berilgan navbat cheklari: sana va soat, bemor, telefon, bo'lim, xizmat, narx. Yangi chek qo'shilganda ro'yxat avtomatik yangilanadi."
+                  : activePage === PAGES.patients
+                    ? "Telefon yoki ism-familiya bo‘yicha guruhlangan bemorlar: ustiga bosing — bo‘lim, xizmat, sana va shifokor bo‘yicha barcha tashriflar."
+                    : activePage === PAGES.settings
+                    ? "Lokal bazadagi ma'lumotlarni Atlas'ga qo'lda sync qilish."
+                    : "Navbat holati, chaqirish va printer sozlamalari."}
         </p>
         {message ? <p className="mb-4 text-teal-300 text-sm">{message}</p> : null}
 
@@ -1124,8 +1360,408 @@ export default function App() {
                     </tbody>
                   </table>
                 </div>
+
+                <h3 className="mt-10 text-base font-bold text-white">Berilgan cheklar (bemorlar)</h3>
+                <p className="text-xs text-white/45 mb-3">
+                  Ro&apos;yxat: navbat olingan vaqt (
+                  {reportData?.timezone || "Asia/Tashkent"}) bo&apos;yicha. Eski cheklarda bemor maydonlari bo&apos;sh
+                  bo&apos;lishi mumkin.
+                </p>
+                <div className="mt-2 overflow-x-auto rounded-xl border border-white/10">
+                  <table className="min-w-full border-collapse text-sm">
+                    <thead className="bg-white/5 text-white/70">
+                      <tr>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
+                          Sana va soat
+                        </th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Ism</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Familiya</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
+                          Telefon
+                        </th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
+                          Navbat
+                        </th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Bo&apos;lim</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Shifokor</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Xizmat</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-right font-semibold">Narx</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(reportData.ticketLog || []).length === 0 ? (
+                        <tr>
+                          <td
+                            colSpan={9}
+                            className="border-b border-white/10 px-4 py-6 text-center text-white/45"
+                          >
+                            Bu sanalar oralig&apos;ida chek topilmadi.
+                          </td>
+                        </tr>
+                      ) : (
+                        (reportData.ticketLog || []).map((row) => (
+                          <tr key={row.ticketId || `${row.createdAt}-${row.queueCode}`} className="odd:bg-black/20 even:bg-black/10">
+                            <td className="border-b border-white/10 px-3 py-2.5 font-mono text-xs whitespace-nowrap text-white/90">
+                              {formatReportDateTime(row.createdAt, reportData.timezone)}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white">
+                              {row.patientFirstName || "—"}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white">
+                              {row.patientLastName || "—"}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 font-mono text-xs text-teal-200/90 whitespace-nowrap">
+                              {row.patientPhone || "—"}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 font-mono font-bold text-teal-300 whitespace-nowrap">
+                              {row.queueCode || "—"}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white/80">{row.section || "—"}</td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white/85">
+                              {formatDoctorFromRow(row)}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white/80">{row.service || "—"}</td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-right text-white/90 whitespace-nowrap">
+                              {Number(row.price || 0).toLocaleString("uz-UZ")} so&apos;m
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </>
             ) : null}
+          </section>
+        ) : null}
+
+        {activePage === PAGES.orders ? (
+          <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6">
+            <div className="flex flex-wrap items-end gap-3 mb-5">
+              <label className="text-xs text-white/60 block">
+                Maks. qatorlar
+                <select
+                  className="mt-1 block rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-white text-sm"
+                  value={ordersLogLimit}
+                  onChange={(e) => setOrdersLogLimit(Number(e.target.value) || 8000)}
+                >
+                  <option value={4000}>4 000</option>
+                  <option value={8000}>8 000</option>
+                  <option value={12000}>12 000</option>
+                  <option value={20000}>20 000</option>
+                  <option value={50000}>50 000</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-lg bg-teal-500 text-black font-bold text-sm"
+                onClick={() => void fetchOrdersLog()}
+                disabled={isOrdersLogLoading}
+              >
+                {isOrdersLogLoading ? "Yuklanmoqda..." : "Yangilash"}
+              </button>
+            </div>
+
+            {ordersLogData ? (
+              <>
+                <div className="text-sm text-white/80 flex flex-wrap gap-4 mb-4">
+                  <p>
+                    Ko&apos;rsatilgan:{" "}
+                    <strong className="text-teal-300">{ordersLogData.summary?.count ?? 0}</strong>
+                  </p>
+                  <p>
+                    Xotirada jami:{" "}
+                    <strong className="text-teal-300">{ordersLogData.totalInMemory ?? 0}</strong>
+                  </p>
+                  {ordersLogData.truncated ? (
+                    <p className="text-amber-200/90">Ro&apos;yxat chegaraga yetdi — limitni oshiring.</p>
+                  ) : null}
+                  <p>
+                    Jami narx (ko&apos;rsatilgan):{" "}
+                    <strong className="text-teal-300">
+                      {Number(ordersLogData.summary?.totalRevenue || 0).toLocaleString("uz-UZ")} so&apos;m
+                    </strong>
+                  </p>
+                </div>
+
+                <div className="overflow-x-auto rounded-xl border border-white/10">
+                  <table className="min-w-full border-collapse text-sm">
+                    <thead className="bg-white/5 text-white/70">
+                      <tr>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
+                          Sana va soat
+                        </th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Ism</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Familiya</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
+                          Telefon
+                        </th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
+                          Navbat
+                        </th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Bo&apos;lim</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Shifokor</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Xizmat</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-right font-semibold">Narx</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-center font-semibold whitespace-nowrap">
+                          Chek
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(ordersLogData.rows || []).length === 0 ? (
+                        <tr>
+                          <td
+                            colSpan={10}
+                            className="border-b border-white/10 px-4 py-8 text-center text-white/45"
+                          >
+                            Hozircha berilgan chek yo&apos;q.
+                          </td>
+                        </tr>
+                      ) : (
+                        (ordersLogData.rows || []).map((row) => (
+                          <tr
+                            key={row.ticketId || `${row.createdAt}-${row.queueCode}`}
+                            className="odd:bg-black/20 even:bg-black/10"
+                          >
+                            <td className="border-b border-white/10 px-3 py-2.5 font-mono text-xs whitespace-nowrap text-white/90">
+                              {formatReportDateTime(row.createdAt, ordersLogData.timezone)}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white">
+                              {row.patientFirstName || "—"}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white">
+                              {row.patientLastName || "—"}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 font-mono text-xs text-teal-200/90 whitespace-nowrap">
+                              {row.patientPhone || "—"}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 font-mono font-bold text-teal-300 whitespace-nowrap">
+                              {row.queueCode || "—"}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white/80">{row.section || "—"}</td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white/85">
+                              {formatDoctorFromRow(row)}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white/80">{row.service || "—"}</td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-right text-white/90 whitespace-nowrap">
+                              {Number(row.price || 0).toLocaleString("uz-UZ")} so&apos;m
+                            </td>
+                            <td className="border-b border-white/10 px-2 py-2.5 text-center whitespace-nowrap">
+                              <button
+                                type="button"
+                                className="px-2.5 py-1.5 rounded-md bg-white/10 text-[11px] font-bold text-white hover:bg-teal-500/25 disabled:opacity-50"
+                                disabled={printingOrderTicketId === row.ticketId}
+                                onClick={() => void printOrderTicket(row)}
+                              >
+                                {printingOrderTicketId === row.ticketId ? "…" : "Qayta"}
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-white/45">{isOrdersLogLoading ? "Yuklanmoqda..." : "Ma'lumot yo'q."}</p>
+            )}
+          </section>
+        ) : null}
+
+        {activePage === PAGES.patients ? (
+          <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6">
+            <div className="flex flex-wrap items-end gap-3 mb-5">
+              <label className="text-xs text-white/60 block">
+                Cheklardan skaner (so&apos;nggi)
+                <select
+                  className="mt-1 block rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-white text-sm"
+                  value={patientsScanLimit}
+                  onChange={(e) => setPatientsScanLimit(Number(e.target.value) || 8000)}
+                >
+                  <option value={8000}>8 000</option>
+                  <option value={12000}>12 000</option>
+                  <option value={20000}>20 000</option>
+                  <option value={50000}>50 000</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-lg bg-teal-500 text-black font-bold text-sm"
+                onClick={() => void fetchPatients()}
+                disabled={isPatientsLoading}
+              >
+                {isPatientsLoading ? "Yuklanmoqda..." : "Yangilash"}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5 w-full max-w-xl">
+              <label className="text-xs text-white/60 block">
+                Filtr: ism
+                <input
+                  type="search"
+                  autoComplete="off"
+                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-white text-sm outline-none focus:border-teal-400/50"
+                  placeholder="Qisman yozing…"
+                  value={patientsFilterFirstName}
+                  onChange={(e) => setPatientsFilterFirstName(e.target.value)}
+                />
+              </label>
+              <label className="text-xs text-white/60 block">
+                Filtr: familiya
+                <input
+                  type="search"
+                  autoComplete="off"
+                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-white text-sm outline-none focus:border-teal-400/50"
+                  placeholder="Qisman yozing…"
+                  value={patientsFilterLastName}
+                  onChange={(e) => setPatientsFilterLastName(e.target.value)}
+                />
+              </label>
+            </div>
+
+            {patientsData ? (
+              <>
+                <div className="text-sm text-white/80 flex flex-wrap gap-4 mb-4">
+                  <p>
+                    Bemorlar (guruh):{" "}
+                    <strong className="text-teal-300">{patientsData.patients?.length ?? 0}</strong>
+                  </p>
+                  {patientsFilterFirstName.trim() || patientsFilterLastName.trim() ? (
+                    <p>
+                      Filtr natijasi:{" "}
+                      <strong className="text-teal-300">{patientsFiltered.length}</strong>
+                    </p>
+                  ) : null}
+                  <p>
+                    Skanerlangan cheklar:{" "}
+                    <strong className="text-teal-300">{patientsData.scannedOrders ?? 0}</strong>
+                  </p>
+                  {patientsData.truncated ? (
+                    <p className="text-amber-200/90">Bazada yana cheklar bor — limitni oshiring.</p>
+                  ) : null}
+                </div>
+
+                <div className="space-y-2">
+                  {(patientsData.patients || []).length === 0 ? (
+                    <p className="text-sm text-white/45 py-6 text-center">Hozircha bemor (chek bilan) topilmadi.</p>
+                  ) : patientsFiltered.length === 0 ? (
+                    <p className="text-sm text-amber-200/90 py-6 text-center">
+                      Filtrga mos bemor topilmadi — ism yoki familiyani o&apos;zgartiring.
+                    </p>
+                  ) : (
+                    patientsFiltered.map((p) => {
+                      const open = expandedPatientKey === p.groupKey;
+                      const name = [p.patientFirstName, p.patientLastName].filter(Boolean).join(" ").trim();
+                      return (
+                        <div
+                          key={p.groupKey}
+                          className="rounded-xl border border-white/10 bg-black/25 overflow-hidden"
+                        >
+                          <button
+                            type="button"
+                            className="w-full flex flex-wrap items-center gap-3 px-4 py-3.5 text-left hover:bg-white/5 transition"
+                            onClick={() =>
+                              setExpandedPatientKey((k) => (k === p.groupKey ? null : p.groupKey))
+                            }
+                          >
+                            <div className="flex-1 min-w-[12rem]">
+                              <div className="text-base font-bold text-white">{name || "Ismsiz bemor"}</div>
+                              <div className="text-sm font-mono text-teal-200/85">{p.patientPhone || "—"}</div>
+                            </div>
+                            <div className="text-right text-sm text-white/80">
+                              <div>
+                                <span className="text-white/45">Tashriflar:</span>{" "}
+                                <strong className="text-white">{p.visitCount}</strong>
+                              </div>
+                              <div className="text-teal-300 font-semibold tabular-nums">
+                                {Number(p.totalSpent || 0).toLocaleString("uz-UZ")} so&apos;m
+                              </div>
+                            </div>
+                            <span className="text-white/45 text-lg w-8 text-center shrink-0">{open ? "▲" : "▼"}</span>
+                          </button>
+
+                          {open ? (
+                            <div className="border-t border-white/10 bg-black/35 px-3 pb-4 pt-3">
+                              <p className="text-xs text-white/50 mb-3 m-0">
+                                Birinchi tashrif:{" "}
+                                <span className="text-white/80 font-mono">
+                                  {formatReportDateTime(p.firstVisitAt, patientsData.timezone)}
+                                </span>
+                                {" · "}
+                                Oxirgi:{" "}
+                                <span className="text-white/80 font-mono">
+                                  {formatReportDateTime(p.lastVisitAt, patientsData.timezone)}
+                                </span>
+                              </p>
+                              <div className="overflow-x-auto rounded-lg border border-white/10">
+                                <table className="min-w-full border-collapse text-sm">
+                                  <thead className="bg-white/5 text-white/65">
+                                    <tr>
+                                      <th className="border-b border-white/10 px-3 py-2.5 text-left font-semibold whitespace-nowrap">
+                                        Sana va soat
+                                      </th>
+                                      <th className="border-b border-white/10 px-3 py-2.5 text-left font-semibold whitespace-nowrap">
+                                        Navbat
+                                      </th>
+                                      <th className="border-b border-white/10 px-3 py-2.5 text-left font-semibold">
+                                        Bo&apos;lim
+                                      </th>
+                                      <th className="border-b border-white/10 px-3 py-2.5 text-left font-semibold">
+                                        Xizmat
+                                      </th>
+                                      <th className="border-b border-white/10 px-3 py-2.5 text-left font-semibold">
+                                        Shifokor
+                                      </th>
+                                      <th className="border-b border-white/10 px-3 py-2.5 text-left font-semibold whitespace-nowrap">
+                                        Xona
+                                      </th>
+                                      <th className="border-b border-white/10 px-3 py-2.5 text-right font-semibold">
+                                        Narx
+                                      </th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {(p.visits || []).map((v) => (
+                                      <tr key={v.ticketId} className="odd:bg-black/15 even:bg-black/10">
+                                        <td className="border-b border-white/10 px-3 py-2 font-mono text-xs whitespace-nowrap text-white/90">
+                                          {formatReportDateTime(v.createdAt, patientsData.timezone)}
+                                        </td>
+                                        <td className="border-b border-white/10 px-3 py-2 font-mono font-bold text-teal-300 whitespace-nowrap">
+                                          {v.queueCode || "—"}
+                                        </td>
+                                        <td className="border-b border-white/10 px-3 py-2 text-white/85">
+                                          {v.section || "—"}
+                                        </td>
+                                        <td className="border-b border-white/10 px-3 py-2 text-white/80">
+                                          {v.service || "—"}
+                                        </td>
+                                        <td className="border-b border-white/10 px-3 py-2 text-white/80">
+                                          {[v.doctorFirstName, v.doctorLastName].filter(Boolean).join(" ") || "—"}
+                                        </td>
+                                        <td className="border-b border-white/10 px-3 py-2 text-white/70 whitespace-nowrap">
+                                          {v.roomNumber || "—"}
+                                        </td>
+                                        <td className="border-b border-white/10 px-3 py-2 text-right whitespace-nowrap text-white/90">
+                                          {Number(v.price || 0).toLocaleString("uz-UZ")} so&apos;m
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-white/45">{isPatientsLoading ? "Yuklanmoqda..." : "Ma'lumot yo'q."}</p>
+            )}
           </section>
         ) : null}
 
