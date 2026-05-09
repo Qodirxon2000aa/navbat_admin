@@ -14,3 +14,15 @@ body {
   color: #fff;
   overflow: hidden;
 }
+
+:where(button, [role="button"], .btn) {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 120ms ease, filter 120ms ease, box-shadow 120ms ease;
+  will-change: transform, filter;
+}
+
+:where(button, [role="button"], .btn):active {
+  transform: scale(0.96) !important;
+  filter: brightness(0.94);
+}

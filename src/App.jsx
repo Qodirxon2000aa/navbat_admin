@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { resolveDoctorPhotoUrl } from "./utils/resolveDoctorPhotoUrl.js";
 
 const RAW_API_URL = import.meta.env.VITE_API_URL || "http://localhost:5001/api";
 const API_URL = `${RAW_API_URL.replace(/\/$/, "")}/admin`;
 const PUBLIC_API_URL = RAW_API_URL.replace(/\/$/, "");
+const REG_FALLBACK_GROUP_MS = 5 * 60 * 1000;
 
 const queueLabel = (ticket, section) => {
   if (!ticket) return "—";
@@ -31,6 +33,18 @@ const emptyDepartment = {
   doctorLogin: "",
   doctorPassword: "",
   doctorPhotoUrl: ""
+};
+
+const emptyRegistrationDraft = {
+  name: "",
+  login: "",
+  password: "",
+  enabled: true
+};
+
+const emptyRegistrationDepartmentDraft = {
+  section: "",
+  title: ""
 };
 
 const slugServiceId = (section) => {
@@ -96,6 +110,11 @@ const formatReportDateTime = (iso, timeZone) => {
     return "—";
   }
 };
+const getTodayIsoDate = () => {
+  const now = new Date();
+  const tzOffsetMs = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - tzOffsetMs).toISOString().slice(0, 10);
+};
 
 const formatDoctorFromRow = (row) => {
   const full = [row?.doctorFirstName, row?.doctorLastName].filter(Boolean).join(" ").trim();
@@ -118,6 +137,32 @@ const buildTicketFromOrderRow = (row) => ({
   patientLastName: row.patientLastName || "",
   patientPhone: row.patientPhone || ""
 });
+const getRegistrationBatchOrFallbackKey = (row, ticketId) => {
+  const explicitBatchId = String(row?.registrationBatchId || row?.batchId || "")
+    .trim()
+    .toLowerCase();
+  if (explicitBatchId) return `batch:${explicitBatchId}`;
+
+  const phone = String(row?.patientPhone || "").replace(/\D/g, "");
+  const first = String(row?.patientFirstName || "").trim().toLowerCase();
+  const last = String(row?.patientLastName || "").trim().toLowerCase();
+  const section = String(row?.section || "").trim().toLowerCase();
+  const createdTs = new Date(row?.createdAt || "").getTime();
+  if (Number.isFinite(createdTs)) {
+    const bucket = Math.floor(createdTs / REG_FALLBACK_GROUP_MS);
+    return `fb:${phone || `${first}|${last}`}:${section}:${bucket}`;
+  }
+  return `ticket:${ticketId}`;
+};
+const getCashierReportDepartmentLabel = (row) =>
+  String(row?.departmentTitle || row?.departmentSection || row?.section || "Noma'lum bo'lim").trim();
+const formatPaymentMethodLabel = (value) => {
+  const method = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (method === "card") return "Karta";
+  return "Naqd pul";
+};
 
 const parsePriceDigits = (str) => {
   const d = String(str).replace(/\D/g, "");
@@ -146,9 +191,16 @@ const uploadDoctorPhotoFile = async (file) => {
 const PAGES = {
   services: "services",
   departments: "departments",
+  registration: "registration",
+  registrationDepartments: "registrationDepartments",
+  registrationServices: "registrationServices",
+  registrationOrders: "registrationOrders",
+  cashier: "cashier",
+  cashierOrders: "cashierOrders",
+  cashierReports: "cashierReports",
+  printer: "printer",
   reports: "reports",
   orders: "orders",
-  patients: "patients",
   settings: "settings",
   control: "control"
 };
@@ -184,17 +236,28 @@ const IconOrders = () => (
     <path d="M9 12h6M9 16h6" />
   </NavIcon>
 );
-const IconPatients = () => (
-  <NavIcon>
-    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-    <circle cx="9" cy="7" r="4" />
-    <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
-  </NavIcon>
-);
 const IconReports = () => (
   <NavIcon>
     <path d="M3 3v18h18" />
     <path d="M7 16l4-4 4 4 5-7" />
+  </NavIcon>
+);
+const IconRegistration = () => (
+  <NavIcon>
+    <rect x="3" y="5" width="18" height="14" rx="2" />
+    <path d="M7 9h6M7 13h4M15 12h2M17 12v2" />
+  </NavIcon>
+);
+const IconRegistrationDepartments = () => (
+  <NavIcon>
+    <path d="M4 20V8l8-4 8 4v12" />
+    <path d="M9 20v-6h6v6" />
+  </NavIcon>
+);
+const IconRegistrationOrders = () => (
+  <NavIcon>
+    <rect x="4" y="4" width="16" height="16" rx="2" />
+    <path d="M8 9h8M8 13h5M15 13h1M8 17h8" />
   </NavIcon>
 );
 const IconDepartments = () => (
@@ -217,8 +280,17 @@ const IconSettings = () => (
   </NavIcon>
 );
 
+const TapButton = ({ children, ...props }) => (
+  <motion.button whileTap={{ scale: 0.96 }} transition={{ type: "spring", stiffness: 500, damping: 24 }} {...props}>
+    {children}
+  </motion.button>
+);
+
 export default function App() {
   const [activePage, setActivePage] = useState(PAGES.control);
+  const [isKorikMenuOpen, setIsKorikMenuOpen] = useState(false);
+  const [isRegistrationMenuOpen, setIsRegistrationMenuOpen] = useState(false);
+  const [isCashierMenuOpen, setIsCashierMenuOpen] = useState(false);
   const [services, setServices] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [newService, setNewService] = useState(emptyService);
@@ -227,39 +299,168 @@ export default function App() {
   const [queueSnapshot, setQueueSnapshot] = useState(null);
   const [printerTarget, setPrinterTarget] = useState("");
   const [printerPort, setPrinterPort] = useState(9100);
+  const [cashierPrinterTarget, setCashierPrinterTarget] = useState("");
+  const [cashierPrinterPort, setCashierPrinterPort] = useState(9100);
   const [printers, setPrinters] = useState([]);
   const [selectedPrinterUri, setSelectedPrinterUri] = useState("");
   const [message, setMessage] = useState("");
-  const [reportFromDate, setReportFromDate] = useState("");
-  const [reportToDate, setReportToDate] = useState("");
+  const [reportFromDate, setReportFromDate] = useState(() => getTodayIsoDate());
+  const [reportToDate, setReportToDate] = useState(() => getTodayIsoDate());
   const [reportData, setReportData] = useState(null);
   const [isReportLoading, setIsReportLoading] = useState(false);
   const [ordersLogData, setOrdersLogData] = useState(null);
   const [isOrdersLogLoading, setIsOrdersLogLoading] = useState(false);
   const [ordersLogLimit, setOrdersLogLimit] = useState(12000);
+  const [registrationOrdersData, setRegistrationOrdersData] = useState(null);
+  const [isRegistrationOrdersLoading, setIsRegistrationOrdersLoading] = useState(false);
+  const [registrationOrdersLimit, setRegistrationOrdersLimit] = useState(12000);
+  const [cashierReportsData, setCashierReportsData] = useState(null);
+  const [isCashierReportsLoading, setIsCashierReportsLoading] = useState(false);
+  const [cashierReportsLimit, setCashierReportsLimit] = useState(20000);
+  const [cashierPendingRows, setCashierPendingRows] = useState([]);
+  const [isCashierPendingLoading, setIsCashierPendingLoading] = useState(false);
+  const [cashierAllOrdersData, setCashierAllOrdersData] = useState(null);
+  const [isCashierAllOrdersLoading, setIsCashierAllOrdersLoading] = useState(false);
+  const [pendingActionKey, setPendingActionKey] = useState("");
+  const [pendingCancelReason, setPendingCancelReason] = useState("");
+  const [cashierActorId, setCashierActorId] = useState("");
+  const [cashierReportExactDate, setCashierReportExactDate] = useState("");
+  const [cashierReportFromDate, setCashierReportFromDate] = useState("");
+  const [cashierReportToDate, setCashierReportToDate] = useState("");
+  const [cashierReportSection, setCashierReportSection] = useState("");
+  const [cashierReportPatientQuery, setCashierReportPatientQuery] = useState("");
+  const [cashierAppliedExactDate, setCashierAppliedExactDate] = useState("");
+  const [cashierAppliedFromDate, setCashierAppliedFromDate] = useState("");
+  const [cashierAppliedToDate, setCashierAppliedToDate] = useState("");
+  const [cashierAppliedSection, setCashierAppliedSection] = useState("");
+  const [cashierAppliedPatientQuery, setCashierAppliedPatientQuery] = useState("");
+  const [cashierFilterApplied, setCashierFilterApplied] = useState(false);
+  const [cashierTrendExactDate, setCashierTrendExactDate] = useState("");
+  const [cashierTrendFromDate, setCashierTrendFromDate] = useState("");
+  const [cashierTrendToDate, setCashierTrendToDate] = useState("");
+  const [isRegistrationPatientsModalOpen, setIsRegistrationPatientsModalOpen] = useState(false);
+  const [registrationPatientsData, setRegistrationPatientsData] = useState(null);
+  const [isRegistrationPatientsLoading, setIsRegistrationPatientsLoading] = useState(false);
+  const [registrationPatientsLimit] = useState(20000);
+  const [registrationPatientsQuery, setRegistrationPatientsQuery] = useState("");
+  const [expandedRegistrationPatients, setExpandedRegistrationPatients] = useState({});
+  const [printingRegistrationPatientKey, setPrintingRegistrationPatientKey] = useState(null);
   const [printingOrderTicketId, setPrintingOrderTicketId] = useState(null);
-  const [patientsData, setPatientsData] = useState(null);
-  const [isPatientsLoading, setIsPatientsLoading] = useState(false);
-  const [patientsScanLimit, setPatientsScanLimit] = useState(20000);
-  const [expandedPatientKey, setExpandedPatientKey] = useState(null);
-  const [patientsFilterFirstName, setPatientsFilterFirstName] = useState("");
-  const [patientsFilterLastName, setPatientsFilterLastName] = useState("");
-  const [isSyncingAtlas, setIsSyncingAtlas] = useState(false);
+  const [cashiers, setCashiers] = useState([]);
+  const [registrations, setRegistrations] = useState([]);
+  const [registrationDepartments, setRegistrationDepartments] = useState([]);
+  const [newRegistrationDepartmentDraft, setNewRegistrationDepartmentDraft] = useState(emptyRegistrationDepartmentDraft);
+  const [registrationServices, setRegistrationServices] = useState([]);
+  const [isRegistrationServiceModalOpen, setIsRegistrationServiceModalOpen] = useState(false);
+  const [newRegistrationService, setNewRegistrationService] = useState({ section: "", name: "", doctorName: "", price: 0 });
+  const [isAddRegistrationModalOpen, setIsAddRegistrationModalOpen] = useState(false);
+  const [newRegistrationDraft, setNewRegistrationDraft] = useState(emptyRegistrationDraft);
+  const [isLoadingDevicePrinters, setIsLoadingDevicePrinters] = useState(false);
+  const isHydratingRef = useRef(true);
+  const lastSavedRegistrationsRef = useRef("");
+  const lastSavedRegistrationServicesRef = useRef("");
+  const lastSavedRegistrationDepartmentsRef = useRef("");
+  const registrationsDirtyRef = useRef(false);
+  const registrationDepartmentsDirtyRef = useRef(false);
 
   const isZbPrinter = (value) => String(value || "").toLowerCase().includes("zb");
+  const cashierNameById = useMemo(() => {
+    const map = new Map();
+    (cashiers || []).forEach((c) => {
+      const id = String(c?.id || "").trim();
+      if (!id) return;
+      map.set(id, String(c?.name || c?.login || id).trim());
+    });
+    return map;
+  }, [cashiers]);
+  const cashierDepartmentLookup = useMemo(() => {
+    const regularDeptBySection = new Map(
+      (departments || []).map((d) => [String(d?.section || "").trim().toUpperCase(), String(d?.title || "").trim()])
+    );
+    const registrationDeptBySection = new Map(
+      (registrationDepartments || []).map((d) => [
+        String(d?.section || "").trim().toUpperCase(),
+        String(d?.title || "").trim()
+      ])
+    );
+    const byServiceId = new Map();
+
+    (services || []).forEach((svc) => {
+      const id = String(svc?.id || "").trim();
+      if (!id) return;
+      const section = String(svc?.section || "").trim().toUpperCase();
+      const label = regularDeptBySection.get(section) || String(svc?.name || "").trim() || section;
+      if (label) byServiceId.set(id, label);
+    });
+
+    (registrationServices || []).forEach((svc) => {
+      const id = String(svc?.id || "").trim();
+      if (!id) return;
+      const section = String(svc?.section || "").trim().toUpperCase();
+      const label = registrationDeptBySection.get(section) || String(svc?.name || "").trim() || section;
+      if (label) byServiceId.set(id, label);
+    });
+
+    return { byServiceId, regularDeptBySection, registrationDeptBySection };
+  }, [services, departments, registrationServices, registrationDepartments]);
+  const getCashierReportDepartmentLabel = useCallback(
+    (row) => {
+      const serviceId = String(row?.serviceId || "").trim();
+      if (serviceId && cashierDepartmentLookup.byServiceId.has(serviceId)) {
+        return cashierDepartmentLookup.byServiceId.get(serviceId);
+      }
+
+      const departmentSection = String(row?.departmentSection || "").trim().toUpperCase();
+      if (departmentSection && cashierDepartmentLookup.registrationDeptBySection.has(departmentSection)) {
+        return cashierDepartmentLookup.registrationDeptBySection.get(departmentSection);
+      }
+
+      const section = String(row?.section || "").trim().toUpperCase();
+      if (section && cashierDepartmentLookup.regularDeptBySection.has(section)) {
+        return cashierDepartmentLookup.regularDeptBySection.get(section);
+      }
+      if (section && cashierDepartmentLookup.registrationDeptBySection.has(section)) {
+        return cashierDepartmentLookup.registrationDeptBySection.get(section);
+      }
+
+      const rawTitle = String(row?.departmentTitle || "").trim();
+      if (rawTitle) return rawTitle;
+      return String(row?.departmentSection || row?.section || "Noma'lum bo'lim").trim();
+    },
+    [cashierDepartmentLookup]
+  );
 
   const fetchConfig = async () => {
     const response = await fetch(`${API_URL}/config`, { cache: "no-store" });
     const data = await response.json();
     setServices(data.services || []);
     setDepartments(data.departments || []);
+    setCashiers(data.cashiers || []);
+    if (!registrationsDirtyRef.current) {
+      setRegistrations(data.registrations || []);
+      lastSavedRegistrationsRef.current = JSON.stringify(data.registrations || []);
+    }
+    if (!registrationDepartmentsDirtyRef.current) {
+      setRegistrationDepartments(data.registrationDepartments || []);
+      lastSavedRegistrationDepartmentsRef.current = JSON.stringify(data.registrationDepartments || []);
+    }
+    setRegistrationServices(data.registrationServices || []);
     setPrinterTarget(data.printerTarget || "");
     setPrinterPort(data.printerPort || 9100);
+    setCashierPrinterTarget(data.cashierPrinterTarget || "");
+    setCashierPrinterPort(Number(data.cashierPrinterPort) || 9100);
+    lastSavedRegistrationServicesRef.current = JSON.stringify(data.registrationServices || []);
+    isHydratingRef.current = false;
   };
 
   useEffect(() => {
     fetchConfig();
   }, []);
+  useEffect(() => {
+    if (cashierActorId) return;
+    const firstEnabled = (cashiers || []).find((c) => c.enabled !== false && String(c.id || "").trim());
+    if (firstEnabled?.id) setCashierActorId(String(firstEnabled.id));
+  }, [cashiers, cashierActorId]);
 
   const fetchOrdersLog = useCallback(async () => {
     setIsOrdersLogLoading(true);
@@ -284,50 +485,479 @@ export default function App() {
   const fetchOrdersLogRef = useRef(fetchOrdersLog);
   fetchOrdersLogRef.current = fetchOrdersLog;
 
-  const fetchPatients = useCallback(async () => {
-    setIsPatientsLoading(true);
+  const fetchRegistrationOrdersLog = useCallback(async () => {
+    setIsRegistrationOrdersLoading(true);
     try {
       const response = await fetch(
-        `${API_URL}/patients?limit=${encodeURIComponent(patientsScanLimit)}`,
+        `${API_URL}/registration-orders-log?status=all&limit=${encodeURIComponent(registrationOrdersLimit)}`,
         { cache: "no-store" }
       );
       const data = await response.json();
       if (!response.ok) {
-        window.alert(data.message || "Bemorlar ro'yxatini olishda xatolik");
+        window.alert(data.message || "Registratsiya buyurtmalarini olishda xatolik");
         return;
       }
-      setPatientsData(data);
+      setRegistrationOrdersData(data);
     } catch (_error) {
-      window.alert("Bemorlar: server bilan aloqa xatoligi");
+      window.alert("Registratsiya buyurtmalari: server bilan aloqa xatoligi");
     } finally {
-      setIsPatientsLoading(false);
+      setIsRegistrationOrdersLoading(false);
     }
-  }, [patientsScanLimit]);
+  }, [registrationOrdersLimit]);
 
-  const fetchPatientsRef = useRef(fetchPatients);
-  fetchPatientsRef.current = fetchPatients;
+  const fetchRegistrationOrdersLogRef = useRef(fetchRegistrationOrdersLog);
+  fetchRegistrationOrdersLogRef.current = fetchRegistrationOrdersLog;
+  const fetchCashierReportsLog = useCallback(async () => {
+    setIsCashierReportsLoading(true);
+    try {
+      const response = await fetch(
+        `${API_URL}/registration-orders-log?status=confirmed&limit=${encodeURIComponent(cashierReportsLimit)}`,
+        { cache: "no-store" }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        window.alert(data.message || "Kassa hisobotini olishda xatolik");
+        return;
+      }
+      setCashierReportsData(data);
+    } catch (_error) {
+      window.alert("Kassa hisobotlari: server bilan aloqa xatoligi");
+    } finally {
+      setIsCashierReportsLoading(false);
+    }
+  }, [cashierReportsLimit]);
+  const fetchCashierReportsLogRef = useRef(fetchCashierReportsLog);
+  fetchCashierReportsLogRef.current = fetchCashierReportsLog;
+  const fetchCashierPendingOrders = useCallback(async () => {
+    setIsCashierPendingLoading(true);
+    try {
+      const response = await fetch(`${PUBLIC_API_URL}/cashier/pending-orders?limit=1000`, { cache: "no-store" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Kassa buyurtmalarini olishda xatolik");
+        return;
+      }
+      setCashierPendingRows(Array.isArray(data.rows) ? data.rows : []);
+    } catch (_error) {
+      window.alert("Kassa buyurtmalari: server bilan aloqa xatoligi");
+    } finally {
+      setIsCashierPendingLoading(false);
+    }
+  }, []);
+  const fetchCashierPendingOrdersRef = useRef(fetchCashierPendingOrders);
+  fetchCashierPendingOrdersRef.current = fetchCashierPendingOrders;
+  const fetchCashierAllOrders = useCallback(async () => {
+    setIsCashierAllOrdersLoading(true);
+    try {
+      const response = await fetch(`${PUBLIC_API_URL}/cashier/orders-log?status=all&limit=500`, { cache: "no-store" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Kassa buyurtmalari tarixini olishda xatolik");
+        return;
+      }
+      setCashierAllOrdersData(data);
+    } catch (_error) {
+      window.alert("Kassa buyurtmalari tarixi: server bilan aloqa xatoligi");
+    } finally {
+      setIsCashierAllOrdersLoading(false);
+    }
+  }, []);
+  const fetchCashierAllOrdersRef = useRef(fetchCashierAllOrders);
+  fetchCashierAllOrdersRef.current = fetchCashierAllOrders;
 
-  const patientsFiltered = useMemo(() => {
-    const list = patientsData?.patients || [];
-    const qFn = String(patientsFilterFirstName || "").trim().toLowerCase();
-    const qLn = String(patientsFilterLastName || "").trim().toLowerCase();
-    if (!qFn && !qLn) return list;
-    return list.filter((p) => {
-      const fn = String(p.patientFirstName || "").toLowerCase();
-      const ln = String(p.patientLastName || "").toLowerCase();
-      if (qFn && !fn.includes(qFn)) return false;
-      if (qLn && !ln.includes(qLn)) return false;
+  const fetchRegistrationPatients = useCallback(async () => {
+    setIsRegistrationPatientsLoading(true);
+    try {
+      const response = await fetch(
+        `${API_URL}/registration-patients?limit=${encodeURIComponent(registrationPatientsLimit)}`,
+        { cache: "no-store" }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        window.alert(data.message || "Registratsiya bemorlarini olishda xatolik");
+        return;
+      }
+      setRegistrationPatientsData(data);
+    } catch (_error) {
+      window.alert("Registratsiya bemorlari: server bilan aloqa xatoligi");
+    } finally {
+      setIsRegistrationPatientsLoading(false);
+    }
+  }, [registrationPatientsLimit]);
+
+  const filteredRegistrationPatients = useMemo(() => {
+    const list = Array.isArray(registrationPatientsData?.patients) ? registrationPatientsData.patients : [];
+    const q = String(registrationPatientsQuery || "")
+      .trim()
+      .toLowerCase();
+    if (!q) return list;
+    return list.filter((patient) => {
+      const fullName = [patient?.patientFirstName, patient?.patientLastName]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return fullName.includes(q);
+    });
+  }, [registrationPatientsData, registrationPatientsQuery]);
+  const reportDashboard = useMemo(() => {
+    const rows = Array.isArray(reportData?.rows) ? reportData.rows : [];
+    const ticketLog = Array.isArray(reportData?.ticketLog) ? reportData.ticketLog : [];
+    const totalRevenue = Number(reportData?.summary?.totalRevenue || 0);
+    const totalTickets = Number(reportData?.summary?.totalTickets || 0);
+    const topSections = [...rows]
+      .sort((a, b) => Number(b.totalRevenue || 0) - Number(a.totalRevenue || 0))
+      .slice(0, 8);
+    const byService = new Map();
+    ticketLog.forEach((row) => {
+      const section = String(row?.section || "-").trim();
+      const service = String(row?.service || "Xizmat").trim();
+      const key = `${section}:::${service}`;
+      const prev = byService.get(key) || { section, service, count: 0, totalRevenue: 0 };
+      prev.count += 1;
+      prev.totalRevenue += Number(row?.price || 0);
+      byService.set(key, prev);
+    });
+    const topServices = Array.from(byService.values())
+      .sort((a, b) => Number(b.totalRevenue) - Number(a.totalRevenue))
+      .slice(0, 8);
+    const byDay = new Map();
+    ticketLog.forEach((row) => {
+      const day = String(row?.createdAt || "").slice(0, 10);
+      if (!day) return;
+      const prev = byDay.get(day) || { day, count: 0, totalRevenue: 0 };
+      prev.count += 1;
+      prev.totalRevenue += Number(row?.price || 0);
+      byDay.set(day, prev);
+    });
+    const dailyTrend = Array.from(byDay.values()).sort((a, b) => String(a.day).localeCompare(String(b.day)));
+    const maxSectionRevenue = topSections.reduce((m, r) => Math.max(m, Number(r.totalRevenue || 0)), 0);
+    const maxServiceRevenue = topServices.reduce((m, r) => Math.max(m, Number(r.totalRevenue || 0)), 0);
+    const avgTicket = totalTickets > 0 ? Math.round(totalRevenue / totalTickets) : 0;
+    return {
+      totalRevenue,
+      totalTickets,
+      avgTicket,
+      topSections,
+      topServices,
+      dailyTrend,
+      maxSectionRevenue,
+      maxServiceRevenue
+    };
+  }, [reportData]);
+
+  const printRegistrationPatientSummary = async (patient) => {
+    if (!patient) return;
+    setPrintingRegistrationPatientKey(patient.groupKey || null);
+    try {
+      const response = await fetch(`${API_URL}/registration-patients/print`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          patient: {
+            patientFirstName: patient.patientFirstName,
+            patientLastName: patient.patientLastName,
+            patientPhone: patient.patientPhone
+          },
+          visits: Array.isArray(patient.visits) ? patient.visits : []
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Umumiy chekni chiqarishda xatolik");
+        return;
+      }
+      window.alert(data.message || "Bemorning umumiy cheki printerga yuborildi.");
+    } catch (_error) {
+      window.alert("Printer yoki server bilan aloqa xatoligi");
+    } finally {
+      setPrintingRegistrationPatientKey(null);
+    }
+  };
+  const applyCashierReportFilters = () => {
+    const from = String(cashierReportFromDate || "");
+    const to = String(cashierReportToDate || "");
+    const exact = String(cashierReportExactDate || "");
+    const hasRange = Boolean(from || to);
+    setCashierAppliedExactDate(hasRange ? "" : exact);
+    setCashierAppliedFromDate(from);
+    setCashierAppliedToDate(to);
+    setCashierAppliedSection(String(cashierReportSection || "").trim());
+    setCashierAppliedPatientQuery(String(cashierReportPatientQuery || "").trim());
+    setCashierFilterApplied(true);
+  };
+  const resetCashierReportFilters = () => {
+    setCashierReportExactDate("");
+    setCashierReportFromDate("");
+    setCashierReportToDate("");
+    setCashierReportSection("");
+    setCashierReportPatientQuery("");
+    setCashierAppliedExactDate("");
+    setCashierAppliedFromDate("");
+    setCashierAppliedToDate("");
+    setCashierAppliedSection("");
+    setCashierAppliedPatientQuery("");
+    setCashierFilterApplied(false);
+  };
+  const cashierReportRows = useMemo(() => {
+    const rows = Array.isArray(cashierReportsData?.rows) ? cashierReportsData.rows : [];
+    const from = String(cashierAppliedFromDate || "");
+    const to = String(cashierAppliedToDate || "");
+    const exact = String(cashierAppliedExactDate || "");
+    const section = String(cashierAppliedSection || "");
+    const q = String(cashierAppliedPatientQuery || "").toLowerCase();
+    return rows.filter((row) => {
+      const day = String(row?.createdAt || "").slice(0, 10);
+      if (exact) {
+        if (day !== exact) return false;
+      } else {
+        if (from && day < from) return false;
+        if (to && day > to) return false;
+      }
+      if (section && getCashierReportDepartmentLabel(row) !== section) return false;
+      if (q) {
+        const full = `${String(row?.patientFirstName || "")} ${String(row?.patientLastName || "")}`.toLowerCase();
+        if (!full.includes(q)) return false;
+      }
       return true;
     });
-  }, [patientsData, patientsFilterFirstName, patientsFilterLastName]);
-
-  useEffect(() => {
-    if (!expandedPatientKey) return undefined;
-    if (!patientsFiltered.some((p) => p.groupKey === expandedPatientKey)) {
-      setExpandedPatientKey(null);
+  }, [
+    cashierReportsData,
+    cashierAppliedFromDate,
+    cashierAppliedToDate,
+    cashierAppliedExactDate,
+    cashierAppliedSection,
+    cashierAppliedPatientQuery
+  ]);
+  const cashierPendingGroups = useMemo(() => {
+    const groups = new Map();
+    (Array.isArray(cashierPendingRows) ? cashierPendingRows : []).forEach((row) => {
+      const ticketId = String(row?.id || row?.ticketId || "").trim();
+      if (!ticketId) return;
+      const key = getRegistrationBatchOrFallbackKey(row, ticketId);
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          ticketIds: [],
+          createdAt: String(row?.createdAt || ""),
+          patientFirstName: String(row?.patientFirstName || "").trim(),
+          patientLastName: String(row?.patientLastName || "").trim(),
+          patientPhone: String(row?.patientPhone || "").trim(),
+          lineItems: [],
+          total: 0
+        });
+      }
+      const g = groups.get(key);
+      g.ticketIds.push(ticketId);
+      g.lineItems.push({
+        ticketId,
+        service: String(row?.service || "Xizmat"),
+        price: Number(row?.price || 0)
+      });
+      g.total += Number(row?.price || 0);
+      if (String(row?.createdAt || "") > g.createdAt) g.createdAt = String(row?.createdAt || "");
+      if (!g.patientPhone && row?.patientPhone) g.patientPhone = String(row.patientPhone || "").trim();
+    });
+    return Array.from(groups.values()).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  }, [cashierPendingRows]);
+  const cashierCancelledRows = useMemo(() => {
+    const rows = Array.isArray(cashierAllOrdersData?.rows) ? cashierAllOrdersData.rows : [];
+    return rows.filter((row) => String(row?.cashierStatus || "").toLowerCase() === "cancelled").slice(0, 30);
+  }, [cashierAllOrdersData]);
+  const confirmCashierPendingGroup = async (group) => {
+    const ticketIds = Array.isArray(group?.ticketIds) ? group.ticketIds : [];
+    if (!ticketIds.length) return;
+    if (!cashierActorId) {
+      window.alert("Avval kassa foydalanuvchisini tanlang");
+      return;
     }
-    return undefined;
-  }, [patientsFiltered, expandedPatientKey]);
+    setPendingActionKey(String(group?.key || ""));
+    try {
+      const response = await fetch(`${PUBLIC_API_URL}/cashier/confirm-orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cashierId: cashierActorId, ticketIds })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Tasdiqlashda xatolik");
+        return;
+      }
+      await Promise.all([
+        fetchCashierPendingOrdersRef.current(),
+        fetchCashierAllOrdersRef.current(),
+        fetchCashierReportsLogRef.current()
+      ]);
+    } catch (_error) {
+      window.alert("Tasdiqlashda server bilan aloqa xatoligi");
+    } finally {
+      setPendingActionKey("");
+    }
+  };
+  const cancelCashierPendingGroup = async (group) => {
+    const ticketIds = Array.isArray(group?.ticketIds) ? group.ticketIds : [];
+    if (!ticketIds.length) return;
+    if (!cashierActorId) {
+      window.alert("Avval kassa foydalanuvchisini tanlang");
+      return;
+    }
+    const reason = String(pendingCancelReason || "").trim();
+    if (reason.length < 3) {
+      window.alert("Bekor qilish sababi kamida 3 harf bo'lsin");
+      return;
+    }
+    setPendingActionKey(String(group?.key || ""));
+    try {
+      const response = await fetch(`${PUBLIC_API_URL}/cashier/cancel-orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cashierId: cashierActorId, ticketIds, reason })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Bekor qilishda xatolik");
+        return;
+      }
+      await Promise.all([
+        fetchCashierPendingOrdersRef.current(),
+        fetchCashierAllOrdersRef.current(),
+        fetchCashierReportsLogRef.current()
+      ]);
+    } catch (_error) {
+      window.alert("Bekor qilishda server bilan aloqa xatoligi");
+    } finally {
+      setPendingActionKey("");
+    }
+  };
+  const cashierReportGroupedRows = useMemo(() => {
+    const rows = Array.isArray(cashierReportRows) ? cashierReportRows : [];
+    const groups = new Map();
+
+    rows.forEach((row) => {
+      const firstName = String(row?.patientFirstName || "").trim();
+      const lastName = String(row?.patientLastName || "").trim();
+      const fullName = `${firstName} ${lastName}`.trim() || "—";
+      const timeBucket = String(row?.createdAt || "").slice(0, 16);
+      const ticketId = String(row?.ticketId || "");
+      const ticketBatch = ticketId.includes("-") ? ticketId.split("-").slice(0, -1).join("-") : "";
+      const batchId = String(row?.batchId || row?.groupId || ticketBatch).trim();
+      const groupKey = `${batchId}|${fullName.toLowerCase()}|${timeBucket}`;
+
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, {
+          groupKey,
+          batchId,
+          createdAt: row?.createdAt,
+          patientName: fullName,
+          patientPhone: String(row?.patientPhone || "").trim() || "—",
+          departments: new Set(),
+          paymentMethods: new Set(),
+          services: [],
+          totalPrice: 0
+        });
+      }
+
+      const target = groups.get(groupKey);
+      const departmentLabel = getCashierReportDepartmentLabel(row);
+      target.departments.add(departmentLabel);
+      target.paymentMethods.add(formatPaymentMethodLabel(row?.paymentMethod));
+      target.services.push({
+        ticketId: row?.ticketId,
+        service: String(row?.service || "—").trim() || "—",
+        department: departmentLabel,
+        price: Number(row?.price || 0)
+      });
+      target.totalPrice += Number(row?.price || 0);
+    });
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        ...group,
+        departmentsLabel: Array.from(group.departments).filter(Boolean).join(", "),
+        paymentMethodLabel: Array.from(group.paymentMethods).filter(Boolean).join(", ") || "Naqd pul"
+      }))
+      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  }, [cashierReportRows, getCashierReportDepartmentLabel]);
+  const cashierReportSections = useMemo(() => {
+    const rows = Array.isArray(cashierReportsData?.rows) ? cashierReportsData.rows : [];
+    return Array.from(new Set(rows.map((row) => getCashierReportDepartmentLabel(row)).filter(Boolean))).sort((a, b) =>
+      a.localeCompare(b, "uz")
+    );
+  }, [cashierReportsData]);
+  const cashierReportDashboard = useMemo(() => {
+    const rows = Array.isArray(cashierReportRows) ? cashierReportRows : [];
+    const totalRevenue = rows.reduce((sum, row) => sum + Number(row?.price || 0), 0);
+    const totalChecks = rows.length;
+    const avgCheck = totalChecks > 0 ? Math.round(totalRevenue / totalChecks) : 0;
+
+    const byDepartment = new Map();
+    const byService = new Map();
+    const byDay = new Map();
+
+    rows.forEach((row) => {
+      const price = Number(row?.price || 0);
+      const department = getCashierReportDepartmentLabel(row);
+      const service = String(row?.service || "Xizmat ko'rsatilmagan").trim();
+      const day = String(row?.createdAt || "").slice(0, 10) || "Noma'lum sana";
+
+      byDepartment.set(department, (byDepartment.get(department) || 0) + price);
+      byService.set(service, (byService.get(service) || 0) + price);
+      byDay.set(day, {
+        day,
+        totalRevenue: (byDay.get(day)?.totalRevenue || 0) + price,
+        count: (byDay.get(day)?.count || 0) + 1
+      });
+    });
+
+    const topDepartments = Array.from(byDepartment.entries())
+      .map(([label, revenue]) => ({ label, revenue: Number(revenue || 0) }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 6);
+
+    const topServices = Array.from(byService.entries())
+      .map(([label, revenue]) => ({ label, revenue: Number(revenue || 0) }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 6);
+
+    const dailySeries = Array.from(byDay.values()).sort((a, b) => String(a.day).localeCompare(String(b.day)));
+    const dailyTrend = dailySeries.slice(-7);
+
+    const maxDepartmentRevenue = topDepartments.reduce((m, x) => Math.max(m, Number(x.revenue || 0)), 0);
+    const maxServiceRevenue = topServices.reduce((m, x) => Math.max(m, Number(x.revenue || 0)), 0);
+    const maxDailyRevenue = dailyTrend.reduce((m, x) => Math.max(m, Number(x.totalRevenue || 0)), 0);
+
+    return {
+      totalRevenue,
+      totalChecks,
+      avgCheck,
+      topDepartments,
+      topServices,
+      dailySeries,
+      dailyTrend,
+      maxDepartmentRevenue,
+      maxServiceRevenue,
+      maxDailyRevenue
+    };
+  }, [cashierReportRows]);
+  const cashierTrendItems = useMemo(() => {
+    const all = Array.isArray(cashierReportDashboard.dailySeries) ? cashierReportDashboard.dailySeries : [];
+    const exact = String(cashierTrendExactDate || "");
+    const from = String(cashierTrendFromDate || "");
+    const to = String(cashierTrendToDate || "");
+    const hasRange = Boolean(from || to);
+    const filtered = all.filter((day) => {
+      const key = String(day?.day || "");
+      if (exact && !hasRange) return key === exact;
+      if (from && key < from) return false;
+      if (to && key > to) return false;
+      return true;
+    });
+    if (!exact && !hasRange) return filtered.slice(-7);
+    return filtered;
+  }, [cashierReportDashboard.dailySeries, cashierTrendExactDate, cashierTrendFromDate, cashierTrendToDate]);
+  const cashierTrendMaxRevenue = useMemo(
+    () => cashierTrendItems.reduce((m, x) => Math.max(m, Number(x?.totalRevenue || 0)), 0),
+    [cashierTrendItems]
+  );
 
   useEffect(() => {
     if (activePage !== PAGES.orders) return undefined;
@@ -336,10 +966,21 @@ export default function App() {
   }, [activePage, ordersLogLimit, fetchOrdersLog]);
 
   useEffect(() => {
-    if (activePage !== PAGES.patients) return undefined;
-    void fetchPatients();
+    if (activePage !== PAGES.registrationOrders) return undefined;
+    void fetchRegistrationOrdersLog();
     return undefined;
-  }, [activePage, patientsScanLimit, fetchPatients]);
+  }, [activePage, registrationOrdersLimit, fetchRegistrationOrdersLog]);
+  useEffect(() => {
+    if (activePage !== PAGES.cashierReports) return undefined;
+    void fetchCashierReportsLog();
+    return undefined;
+  }, [activePage, cashierReportsLimit, fetchCashierReportsLog]);
+  useEffect(() => {
+    if (activePage !== PAGES.cashierOrders) return undefined;
+    void fetchCashierPendingOrders();
+    void fetchCashierAllOrders();
+    return undefined;
+  }, [activePage, fetchCashierPendingOrders, fetchCashierAllOrders]);
 
   useEffect(() => {
     const events = new EventSource(`${PUBLIC_API_URL}/events`);
@@ -354,8 +995,16 @@ export default function App() {
       if (activePage === PAGES.orders) {
         void fetchOrdersLogRef.current();
       }
-      if (activePage === PAGES.patients) {
-        void fetchPatientsRef.current();
+      if (activePage === PAGES.registrationOrders) {
+        void fetchRegistrationOrdersLogRef.current();
+      }
+      if (activePage === PAGES.cashierReports) {
+        void fetchCashierReportsLogRef.current();
+      }
+      if (activePage === PAGES.cashierOrders) {
+        void fetchCashierPendingOrdersRef.current();
+        void fetchCashierAllOrdersRef.current();
+        void fetchCashierReportsLogRef.current();
       }
     };
 
@@ -585,6 +1234,332 @@ export default function App() {
     }
   };
 
+  const persistRegistrations = async (nextRegistrations = registrations, successMessage = "Registratsiyalar saqlandi.") => {
+    try {
+      const payload = nextRegistrations.map((c, i) => ({
+        id: String(c.id || `registration-${i + 1}`).trim(),
+        name: String(c.name || "").trim(),
+        login: String(c.login || "").trim(),
+        password: String(c.password || "").trim(),
+        enabled: c.enabled !== false
+      }));
+      const bad = payload.some((c) => !c.name || !c.login || !c.password);
+      if (bad) {
+        window.alert("Registratsiya uchun: nom, login va parol to'g'ri bo'lsin.");
+        return;
+      }
+      const response = await fetch(`${API_URL}/registrations`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ registrations: payload })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Registratsiyalarni saqlashda xatolik");
+        return false;
+      }
+      const saved = data.registrations || payload;
+      setRegistrations(saved);
+      lastSavedRegistrationsRef.current = JSON.stringify(saved);
+      window.alert(successMessage);
+      return true;
+    } catch (_e) {
+      window.alert("Server bilan aloqa yo'q");
+      return false;
+    }
+  };
+
+  const saveRegistrations = async () => {
+    await persistRegistrations(registrations);
+  };
+
+  const saveCashierPrinter = async () => {
+    try {
+      const response = await fetch(`${API_URL}/cashier-printer`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cashierPrinterTarget: String(cashierPrinterTarget || "").trim(),
+          cashierPrinterPort
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Kassa printerini saqlashda xatolik");
+        return;
+      }
+      setCashierPrinterTarget(data.cashierPrinterTarget || "");
+      setCashierPrinterPort(Number(data.cashierPrinterPort) || 9100);
+      window.alert("Kassa printeri saqlandi. Tasdiqlangan cheklar shu manzilga chiqadi.");
+    } catch (_e) {
+      window.alert("Server bilan aloqa yo'q");
+    }
+  };
+
+  const saveCashierPrinterFromDevice = async (uri) => {
+    try {
+      const response = await fetch(`${API_URL}/cashier-printer`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cashierPrinterTarget: uri,
+          cashierPrinterPort
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Kassa printerini saqlashda xatolik");
+        return;
+      }
+      setCashierPrinterTarget(data.cashierPrinterTarget || uri);
+      setCashierPrinterPort(Number(data.cashierPrinterPort) || 9100);
+      window.alert("Kassa printeri tanlandi va saqlandi.");
+    } catch (_e) {
+      window.alert("Server bilan aloqa yo'q");
+    }
+  };
+
+  const saveCashiers = async () => {
+    try {
+      const payload = cashiers.map((c, i) => ({
+        id: String(c.id || `cashier-${i + 1}`).trim(),
+        name: String(c.name || "").trim(),
+        login: String(c.login || "").trim(),
+        password: String(c.password || "").trim(),
+        enabled: c.enabled !== false
+      }));
+      const bad = payload.some(
+        (c) =>
+          !c.id ||
+          !c.name ||
+          !c.login ||
+          !c.password
+      );
+      if (bad) {
+        window.alert("Kassa uchun id, ism, login va parol majburiy.");
+        return;
+      }
+      const response = await fetch(`${API_URL}/cashiers`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cashiers: payload })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Kassalarni saqlashda xatolik");
+        return;
+      }
+      setCashiers(Array.isArray(data.cashiers) ? data.cashiers : payload);
+      window.alert("Kassalar saqlandi.");
+    } catch (_e) {
+      window.alert("Server bilan aloqa yo'q");
+    }
+  };
+
+  const persistRegistrationServices = async (
+    nextServices = registrationServices,
+    successMessage = "Registratsiya xizmatlari saqlandi."
+  ) => {
+    try {
+      if (!registrationDepartments.length) {
+        window.alert("Avval «Registratsiya bo'limlari» sahifasida kamida bitta bo'lim qo'shing.");
+        return false;
+      }
+      const payload = nextServices.map((s) => ({
+        id: String(s.id || "").trim(),
+        section: String(s.section || "").trim().toUpperCase(),
+        name: String(s.name || "").trim(),
+        doctorName: String(s.doctorName || "").trim(),
+        price: Number(s.price || 0)
+      }));
+      const bad = payload.some(
+        (s) => !s.section || !s.name || !Number.isFinite(s.price) || s.price <= 0
+      );
+      if (bad) {
+        window.alert("Registratsiya xizmatlarida bo'lim, nom va narx (0 dan katta) majburiy.");
+        return;
+      }
+      if (registrationDepartments.length) {
+        const validSections = new Set(registrationDepartments.map((d) => String(d.section || "").trim().toUpperCase()));
+        const unknown = payload.find((s) => !validSections.has(String(s.section || "").trim().toUpperCase()));
+        if (unknown) {
+          window.alert(`Registratsiya xizmati uchun bo'lim topilmadi: ${unknown.section}`);
+          return;
+        }
+      }
+      const response = await fetch(`${API_URL}/registration-services`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ registrationServices: payload })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Registratsiya xizmatlarini saqlashda xatolik");
+        return false;
+      }
+      const saved = data.registrationServices || payload;
+      setRegistrationServices(saved);
+      lastSavedRegistrationServicesRef.current = JSON.stringify(saved);
+      window.alert(successMessage);
+      return true;
+    } catch (_e) {
+      window.alert("Server bilan aloqa yo'q");
+      return false;
+    }
+  };
+
+  const saveRegistrationServices = async () => {
+    await persistRegistrationServices(registrationServices);
+  };
+
+  const persistRegistrationDepartments = async (
+    nextDepartments = registrationDepartments,
+    successMessage = "Registratsiya bo'limlari saqlandi."
+  ) => {
+    try {
+      const payload = nextDepartments.map((d) => ({
+        section: String(d.section || "").trim().toUpperCase(),
+        title: String(d.title || "").trim()
+      }));
+      const bad = payload.some((d) => !d.section);
+      if (bad) {
+        window.alert("Registratsiya bo'limida bo'lim kodi majburiy.");
+        return;
+      }
+      const sections = new Set();
+      for (const d of payload) {
+        if (sections.has(d.section)) {
+          window.alert(`Registratsiya bo'lim kodi takrorlanmas bo'lsin: ${d.section}`);
+          return;
+        }
+        sections.add(d.section);
+      }
+      const response = await fetch(`${API_URL}/registration-departments`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ registrationDepartments: payload })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Registratsiya bo'limlarini saqlashda xatolik");
+        return false;
+      }
+      const saved = data.registrationDepartments || payload;
+      setRegistrationDepartments(saved);
+      lastSavedRegistrationDepartmentsRef.current = JSON.stringify(saved);
+      window.alert(successMessage);
+      return true;
+    } catch (_e) {
+      window.alert("Server bilan aloqa yo'q");
+      return false;
+    }
+  };
+
+  const saveRegistrationDepartments = async () => {
+    await persistRegistrationDepartments(registrationDepartments);
+  };
+
+  const addRegistrationDepartment = () => {
+    const section = String(newRegistrationDepartmentDraft.section || "").trim().toUpperCase();
+    const title = String(newRegistrationDepartmentDraft.title || "").trim();
+    if (!section) {
+      window.alert("Bo'lim kodini kiriting.");
+      return;
+    }
+    if (registrationDepartments.some((d) => String(d.section || "").trim().toUpperCase() === section)) {
+      window.alert("Bu registratsiya bo'lim kodi allaqachon mavjud.");
+      return;
+    }
+    setRegistrationDepartments((prev) => [...prev, { section, title }]);
+    setNewRegistrationDepartmentDraft(emptyRegistrationDepartmentDraft);
+    setMessage("Bo'lim qo'shildi. Saqlash tugmasini bosgandan keyin serverga yoziladi.");
+  };
+
+  const openAddRegistrationModal = () => {
+    setNewRegistrationDraft({ ...emptyRegistrationDraft });
+    setIsAddRegistrationModalOpen(true);
+  };
+
+  const removeRegistrationAt = (index) => {
+    const row = registrations[index];
+    const label = String(row?.name || row?.login || row?.id || "").trim() || "Bu registratsiya";
+    if (
+      !window.confirm(
+        `«${label}» o'chirilsinmi?`
+      )
+    ) {
+      return;
+    }
+    setRegistrations((prev) => prev.filter((_, i) => i !== index));
+    setMessage("Registratsiya o'chirildi. Saqlash tugmasini bossangiz serverga yoziladi.");
+  };
+
+  const addRegistrationFromModal = async () => {
+    const name = String(newRegistrationDraft.name || "").trim();
+    const login = String(newRegistrationDraft.login || "").trim();
+    const password = String(newRegistrationDraft.password || "").trim();
+    if (!name || !login || !password) {
+      window.alert("Registratsiya nomi, login va parol to'g'ri bo'lsin.");
+      return;
+    }
+    const next = [
+      ...registrations,
+      {
+        id: "",
+        name,
+        login,
+        password,
+        enabled: newRegistrationDraft.enabled !== false
+      }
+    ];
+    setRegistrations(next);
+    setNewRegistrationDraft({ ...emptyRegistrationDraft });
+    setIsAddRegistrationModalOpen(false);
+    setMessage("Registratsiya qo'shildi. Saqlash tugmasini bossangiz serverga yoziladi.");
+  };
+
+  const addRegistrationServiceFromModal = async () => {
+    if (!registrationDepartments.length) {
+      window.alert("Avval «Registratsiya bo'limlari» sahifasida bo'lim qo'shing.");
+      return;
+    }
+    const section = String(newRegistrationService.section || "").trim().toUpperCase();
+    const name = String(newRegistrationService.name || "").trim();
+    const doctorName = String(newRegistrationService.doctorName || "").trim();
+    const price = Number(newRegistrationService.price || 0);
+    if (!section || !name || !Number.isFinite(price) || price <= 0) {
+      window.alert("Bo'lim, xizmat nomi va narxi to'g'ri bo'lsin.");
+      return;
+    }
+    const next = [...registrationServices, { section, name, doctorName, price }];
+    const ok = await persistRegistrationServices(next, "Registratsiya xizmati qo'shildi va saqlandi.");
+    if (!ok) return;
+    setRegistrationServices(next);
+    setNewRegistrationService({ section: "", name: "", doctorName: "", price: 0 });
+    setIsRegistrationServiceModalOpen(false);
+  };
+
+  useEffect(() => {
+    if (isHydratingRef.current || isRegistrationServiceModalOpen) return undefined;
+    const snapshot = JSON.stringify(registrationServices);
+    if (snapshot === lastSavedRegistrationServicesRef.current) return undefined;
+    const timer = setTimeout(() => {
+      void persistRegistrationServices(registrationServices, "Registratsiya xizmatlari avtomatik saqlandi.");
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [registrationServices, isRegistrationServiceModalOpen]);
+
+  useEffect(() => {
+    if (isHydratingRef.current) return;
+    registrationsDirtyRef.current = JSON.stringify(registrations) !== lastSavedRegistrationsRef.current;
+  }, [registrations]);
+
+  useEffect(() => {
+    if (isHydratingRef.current) return;
+    registrationDepartmentsDirtyRef.current =
+      JSON.stringify(registrationDepartments) !== lastSavedRegistrationDepartmentsRef.current;
+  }, [registrationDepartments]);
+
   const addDepartment = () => {
     const normalized = {
       section: String(newDepartment.section || "").trim().toUpperCase(),
@@ -670,16 +1645,24 @@ export default function App() {
   };
 
   const loadDevicePrinters = async () => {
-    const response = await fetch(`${API_URL}/printers`);
-    const data = await response.json();
-    if (!response.ok) {
-      setMessage(data.message || "Printerlarni olishda xatolik");
-      return;
+    setIsLoadingDevicePrinters(true);
+    try {
+      const response = await fetch(`${API_URL}/printers`);
+      const data = await response.json();
+      if (!response.ok) {
+        setMessage(data.message || "Printerlarni olishda xatolik");
+        window.alert(data.message || "Printerlarni olishda xatolik");
+        return;
+      }
+      const list = data.printers || [];
+      setPrinters(list);
+      const selected = list.find((item) => item.uri === printerTarget);
+      setSelectedPrinterUri(selected ? selected.uri : "");
+    } catch (_e) {
+      window.alert("Printerlarni aniqlashda server bilan aloqa yo'q");
+    } finally {
+      setIsLoadingDevicePrinters(false);
     }
-    const list = data.printers || [];
-    setPrinters(list);
-    const selected = list.find((item) => item.uri === printerTarget);
-    setSelectedPrinterUri(selected ? selected.uri : "");
   };
 
   const handleSelectPrinter = (printer) => {
@@ -789,26 +1772,31 @@ export default function App() {
       setPrintingOrderTicketId(null);
     }
   };
-
-  const syncAtlasFromSettings = async () => {
-    setIsSyncingAtlas(true);
+  const reprintCashierReceipt = async (group) => {
+    const ticketId = String(group?.services?.[0]?.ticketId || "").trim();
+    if (!ticketId) return;
+    setPrintingOrderTicketId(ticketId);
     try {
-      const response = await fetch(`${API_URL}/sync-atlas`, { method: "POST" });
+      const response = await fetch(`${PUBLIC_API_URL}/cashier/reprint-ticket`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId })
+      });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        window.alert(data.message || "Atlas sync bajarilmadi");
+        window.alert(data.message || "Qayta chek chiqarishda xatolik");
         return;
       }
-      window.alert(data.message || "Atlas sync muvaffaqiyatli bajarildi");
+      window.alert(data.message || "Qayta chek kassa printeriga yuborildi.");
     } catch (_error) {
-      window.alert("Server bilan aloqa yo'q");
+      window.alert("Printer yoki server bilan aloqa xatoligi");
     } finally {
-      setIsSyncingAtlas(false);
+      setPrintingOrderTicketId(null);
     }
   };
 
   const navBtn = (id, label, Icon) => (
-    <button
+    <TapButton
       type="button"
       onClick={() => setActivePage(id)}
       className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold transition-colors ${
@@ -819,7 +1807,54 @@ export default function App() {
     >
       {Icon ? <Icon /> : null}
       <span className="min-w-0 leading-snug">{label}</span>
-    </button>
+    </TapButton>
+  );
+  const isRegistrationGroupActive =
+    activePage === PAGES.registration ||
+    activePage === PAGES.registrationDepartments ||
+    activePage === PAGES.registrationServices ||
+    activePage === PAGES.registrationOrders;
+  const isCashierGroupActive =
+    activePage === PAGES.cashier || activePage === PAGES.cashierOrders || activePage === PAGES.cashierReports;
+  const isKorikGroupActive =
+    activePage === PAGES.control ||
+    activePage === PAGES.orders ||
+    activePage === PAGES.reports ||
+    activePage === PAGES.departments ||
+    activePage === PAGES.services ||
+    activePage === PAGES.printer;
+  const korikChildBtn = (id, label) => (
+    <TapButton
+      type="button"
+      onClick={() => setActivePage(id)}
+      className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+        activePage === id ? "bg-teal-500/90 text-black" : "text-white/70 hover:bg-white/10 hover:text-white"
+      } md:pl-9`}
+    >
+      <span className="min-w-0 leading-snug">{label}</span>
+    </TapButton>
+  );
+  const registrationChildBtn = (id, label) => (
+    <TapButton
+      type="button"
+      onClick={() => setActivePage(id)}
+      className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+        activePage === id ? "bg-teal-500/90 text-black" : "text-white/70 hover:bg-white/10 hover:text-white"
+      } md:pl-9`}
+    >
+      <span className="min-w-0 leading-snug">{label}</span>
+    </TapButton>
+  );
+  const cashierChildBtn = (id, label) => (
+    <TapButton
+      type="button"
+      onClick={() => setActivePage(id)}
+      className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+        activePage === id ? "bg-teal-500/90 text-black" : "text-white/70 hover:bg-white/10 hover:text-white"
+      } md:pl-9`}
+    >
+      <span className="min-w-0 leading-snug">{label}</span>
+    </TapButton>
   );
 
   return (
@@ -831,12 +1866,130 @@ export default function App() {
         </div>
         <p className="md:hidden text-xs font-bold text-white/90 shrink-0 w-14">Admin</p>
         <div className="flex md:flex-col flex-1 gap-2 md:gap-1 md:flex-1 min-w-0">
-          {navBtn(PAGES.control, "Boshqaruv", IconControl)}
-          {navBtn(PAGES.orders, "Buyurtmalar", IconOrders)}
-          {navBtn(PAGES.patients, "Bemorlar", IconPatients)}
-          {navBtn(PAGES.reports, "Hisobot", IconReports)}
-          {navBtn(PAGES.departments, "Bo'limlar", IconDepartments)}
-          {navBtn(PAGES.services, "Xizmatlar", IconServices)}
+          <div className="w-full">
+            <TapButton
+              type="button"
+              onClick={() => {
+                setActivePage(PAGES.control);
+              }}
+              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold transition-colors ${
+                isKorikGroupActive ? "bg-teal-500 text-black" : "text-white/70 hover:bg-white/10 hover:text-white"
+              }`}
+            >
+              <IconControl />
+              <span className="min-w-0 flex-1 leading-snug">Ko'rik</span>
+              <TapButton
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsKorikMenuOpen((v) => !v);
+                }}
+                className={`shrink-0 text-base font-bold leading-none transition-transform duration-150 ${isKorikMenuOpen ? "rotate-90" : "rotate-0"}`}
+              >
+                {">"}
+              </TapButton>
+            </TapButton>
+            <AnimatePresence initial={false}>
+              {isKorikMenuOpen ? (
+                <motion.div
+                  key="korik-dropdown"
+                  initial={{ height: 0, opacity: 0, y: -4 }}
+                  animate={{ height: "auto", opacity: 1, y: 0 }}
+                  exit={{ height: 0, opacity: 0, y: -4 }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                  className="mt-1 space-y-1 overflow-hidden"
+                >
+                  {korikChildBtn(PAGES.control, "Boshqaruv")}
+                  {korikChildBtn(PAGES.printer, "Printer")}
+                  {korikChildBtn(PAGES.orders, "Buyurtmalar")}
+                  {korikChildBtn(PAGES.reports, "Hisobot")}
+                  {korikChildBtn(PAGES.departments, "Bo'limlar")}
+                  {korikChildBtn(PAGES.services, "Xizmatlar")}
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+          </div>
+          <div className="w-full">
+            <TapButton
+              type="button"
+              onClick={() => {
+                setActivePage(PAGES.cashier);
+              }}
+              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold transition-colors ${
+                isCashierGroupActive ? "bg-teal-500 text-black" : "text-white/70 hover:bg-white/10 hover:text-white"
+              }`}
+            >
+              <IconSettings />
+              <span className="min-w-0 flex-1 leading-snug">Kassa</span>
+              <TapButton
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsCashierMenuOpen((v) => !v);
+                }}
+                className={`shrink-0 text-base font-bold leading-none transition-transform duration-150 ${isCashierMenuOpen ? "rotate-90" : "rotate-0"}`}
+              >
+                {">"}
+              </TapButton>
+            </TapButton>
+            <AnimatePresence initial={false}>
+              {isCashierMenuOpen ? (
+                <motion.div
+                  key="cashier-dropdown"
+                  initial={{ height: 0, opacity: 0, y: -4 }}
+                  animate={{ height: "auto", opacity: 1, y: 0 }}
+                  exit={{ height: 0, opacity: 0, y: -4 }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                  className="mt-1 space-y-1 overflow-hidden"
+                >
+                  {cashierChildBtn(PAGES.cashier, "Sozlamalar")}
+                  {cashierChildBtn(PAGES.cashierOrders, "Buyurtmalar")}
+                  {cashierChildBtn(PAGES.cashierReports, "Hisobotlar")}
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+          </div>
+          <div className="w-full">
+            <TapButton
+              type="button"
+              onClick={() => {
+                setActivePage(PAGES.registration);
+              }}
+              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold transition-colors ${
+                isRegistrationGroupActive ? "bg-teal-500 text-black" : "text-white/70 hover:bg-white/10 hover:text-white"
+              }`}
+            >
+              <IconRegistration />
+              <span className="min-w-0 flex-1 leading-snug">Registratsiya</span>
+              <TapButton
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsRegistrationMenuOpen((v) => !v);
+                }}
+                className={`shrink-0 text-base font-bold leading-none transition-transform duration-150 ${isRegistrationMenuOpen ? "rotate-90" : "rotate-0"}`}
+              >
+                {">"}
+              </TapButton>
+            </TapButton>
+            <AnimatePresence initial={false}>
+              {isRegistrationMenuOpen ? (
+                <motion.div
+                  key="registration-dropdown"
+                  initial={{ height: 0, opacity: 0, y: -4 }}
+                  animate={{ height: "auto", opacity: 1, y: 0 }}
+                  exit={{ height: 0, opacity: 0, y: -4 }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                  className="mt-1 space-y-1 overflow-hidden"
+                >
+                  {registrationChildBtn(PAGES.registration, "Registratsiya (main)")}
+                  {registrationChildBtn(PAGES.registrationDepartments, "Registratsiya bo'limlari")}
+                  {registrationChildBtn(PAGES.registrationServices, "Registratsiya xizmat")}
+                  {registrationChildBtn(PAGES.registrationOrders, "Registratsiya buyurtmalari")}
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+          </div>
           {navBtn(PAGES.settings, "Sozlamalar", IconSettings)}
         </div>
       </aside>
@@ -847,13 +2000,27 @@ export default function App() {
             ? "Xizmatlar"
             : activePage === PAGES.departments
               ? "Bo'limlar"
+              : activePage === PAGES.registration
+                ? "Registratsiya"
+              : activePage === PAGES.registrationDepartments
+                ? "Registratsiya bo'limlari"
+              : activePage === PAGES.registrationServices
+                ? "Registratsiya xizmat"
+              : activePage === PAGES.registrationOrders
+                ? "Registratsiya buyurtmalari"
+              : activePage === PAGES.cashier
+                ? "Kassa"
+              : activePage === PAGES.cashierOrders
+                ? "Kassa buyurtmalari"
+              : activePage === PAGES.cashierReports
+                ? "Kassa hisobotlari"
+              : activePage === PAGES.printer
+                ? "Printer"
               : activePage === PAGES.reports
                 ? "Hisobot"
                 : activePage === PAGES.orders
                   ? "Buyurtmalar"
-                  : activePage === PAGES.patients
-                    ? "Bemorlar"
-                    : activePage === PAGES.settings
+                  : activePage === PAGES.settings
                     ? "Sozlamalar"
                     : "Boshqaruv"}
         </h1>
@@ -862,12 +2029,26 @@ export default function App() {
             ? "Bo'limlar jadvali: xona va narxni tahrirlang yoki modal orqali yangi xizmat qo'shing."
             : activePage === PAGES.departments
               ? "Har klinika bo'limi uchun shifokor shabloni. Keyin xizmat qo'shishda shu bo'limni tanlasangiz, maydonlar o'zi to'ldiriladi."
+              : activePage === PAGES.registration
+                ? "Registratsiya login/parollari va alohida printer manzili."
+              : activePage === PAGES.registrationDepartments
+                ? "Registratsiya bo'limlarini alohida saqlang; keyin registratsiya xizmatlari shu bo'limlarga bog'lanadi."
+              : activePage === PAGES.registrationServices
+                ? "Registratsiya xizmatlari: bo'limga bog'langan xizmatlar, shifokor ismi va narx."
+              : activePage === PAGES.registrationOrders
+                ? "Registratsiyada yaratilgan buyurtmalar: har bir chek td/tr jadvalda ko'rinadi va avtomatik yangilanadi."
+              : activePage === PAGES.cashier
+                ? "Kassa printeri (chek manzili), kassa loginlari. Tasdiqlash cheki shu printerga chiqadi."
+              : activePage === PAGES.cashierOrders
+                ? "Kassaga tushgan kutilayotgan buyurtmalar. Admin ham tasdiqlash/bekor qilishni real-time boshqara oladi."
+              : activePage === PAGES.cashierReports
+                ? "Kassadagi hisobotlar bilan bir xil filterlar: sana, bo'lim, bemor qidiruvi. Natija td/tr jadvalda."
+              : activePage === PAGES.printer
+                ? "Umumiy printer sozlamasi va device printerlarni tanlash."
               : activePage === PAGES.reports
-                ? "Ikki sana oralig'ida bo'limlar bo'yicha yig'ma va har bir berilgan chek: bemor, telefon, sana va soat."
+                ? "Ikki sana oralig'ida bo'limlar bo'yicha yig'ma va har bir berilgan chek: sana, bo'lim, xizmat va narx."
                 : activePage === PAGES.orders
-                  ? "Barcha berilgan navbat cheklari: sana va soat, bemor, telefon, bo'lim, xizmat, narx. Yangi chek qo'shilganda ro'yxat avtomatik yangilanadi."
-                  : activePage === PAGES.patients
-                    ? "Telefon yoki ism-familiya bo‘yicha guruhlangan bemorlar: ustiga bosing — bo‘lim, xizmat, sana va shifokor bo‘yicha barcha tashriflar."
+                  ? "Barcha berilgan navbat cheklari: sana va soat, bo'lim, xizmat, narx. Yangi chek qo'shilganda ro'yxat avtomatik yangilanadi."
                     : activePage === PAGES.settings
                     ? "Lokal bazadagi ma'lumotlarni Atlas'ga qo'lda sync qilish."
                     : "Navbat holati, chaqirish va printer sozlamalari."}
@@ -1302,6 +2483,109 @@ export default function App() {
 
             {reportData ? (
               <>
+                <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-4">
+                  <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                    <p className="text-[11px] uppercase tracking-wide text-white/45">Jami tushum</p>
+                    <p className="mt-1 text-2xl font-extrabold text-teal-300">
+                      {Number(reportDashboard.totalRevenue || 0).toLocaleString("uz-UZ")} so&apos;m
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                    <p className="text-[11px] uppercase tracking-wide text-white/45">Jami navbatlar</p>
+                    <p className="mt-1 text-2xl font-extrabold text-white">
+                      {Number(reportDashboard.totalTickets || 0).toLocaleString("uz-UZ")}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                    <p className="text-[11px] uppercase tracking-wide text-white/45">O&apos;rtacha chek</p>
+                    <p className="mt-1 text-2xl font-extrabold text-teal-300">
+                      {Number(reportDashboard.avgTicket || 0).toLocaleString("uz-UZ")} so&apos;m
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                    <p className="text-[11px] uppercase tracking-wide text-white/45">Faol bo&apos;limlar</p>
+                    <p className="mt-1 text-2xl font-extrabold text-white">
+                      {Number(reportDashboard.topSections.length || 0)}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                  <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                    <h3 className="text-sm font-bold text-white mb-3">Bo&apos;limlar bo&apos;yicha tushum</h3>
+                    <div className="space-y-2">
+                      {reportDashboard.topSections.length === 0 ? (
+                        <p className="text-sm text-white/45">Ma&apos;lumot yo&apos;q</p>
+                      ) : (
+                        reportDashboard.topSections.map((row) => {
+                          const revenue = Number(row.totalRevenue || 0);
+                          const pct = reportDashboard.maxSectionRevenue > 0
+                            ? Math.max(4, Math.round((revenue / reportDashboard.maxSectionRevenue) * 100))
+                            : 0;
+                          return (
+                            <div key={`${row.section}-${row.serviceId}`} className="rounded-lg border border-white/10 bg-black/25 p-2.5">
+                              <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                                <span className="font-semibold text-white/85">{row.section || "-"}</span>
+                                <span className="font-bold text-teal-300">{revenue.toLocaleString("uz-UZ")} so&apos;m</span>
+                              </div>
+                              <div className="h-2 rounded bg-white/10 overflow-hidden">
+                                <div className="h-full rounded bg-teal-400" style={{ width: `${pct}%` }} />
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                    <h3 className="text-sm font-bold text-white mb-3">Xizmatlar TOP (tushum)</h3>
+                    <div className="space-y-2">
+                      {reportDashboard.topServices.length === 0 ? (
+                        <p className="text-sm text-white/45">Ma&apos;lumot yo&apos;q</p>
+                      ) : (
+                        reportDashboard.topServices.map((row) => {
+                          const revenue = Number(row.totalRevenue || 0);
+                          const pct = reportDashboard.maxServiceRevenue > 0
+                            ? Math.max(4, Math.round((revenue / reportDashboard.maxServiceRevenue) * 100))
+                            : 0;
+                          return (
+                            <div key={`${row.section}-${row.service}`} className="rounded-lg border border-white/10 bg-black/25 p-2.5">
+                              <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                                <span className="font-semibold text-white/85">{row.section} • {row.service}</span>
+                                <span className="font-bold text-teal-300">{revenue.toLocaleString("uz-UZ")} so&apos;m</span>
+                              </div>
+                              <div className="mb-1 h-2 rounded bg-white/10 overflow-hidden">
+                                <div className="h-full rounded bg-teal-400" style={{ width: `${pct}%` }} />
+                              </div>
+                              <p className="m-0 text-[11px] text-white/45">{row.count} ta chek</p>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4">
+                  <h3 className="text-sm font-bold text-white mb-3">Kunlik trend</h3>
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                    {reportDashboard.dailyTrend.length === 0 ? (
+                      <p className="text-sm text-white/45">Ma&apos;lumot yo&apos;q</p>
+                    ) : (
+                      reportDashboard.dailyTrend.map((d) => (
+                        <div key={d.day} className="rounded-lg border border-white/10 bg-black/25 p-2.5">
+                          <p className="m-0 text-xs text-white/60">{d.day}</p>
+                          <p className="m-0 mt-1 text-sm font-bold text-teal-300">
+                            {Number(d.totalRevenue || 0).toLocaleString("uz-UZ")} so&apos;m
+                          </p>
+                          <p className="m-0 text-[11px] text-white/45">{d.count} ta chek</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
                 <div className="mt-5 text-sm text-white/80 flex flex-wrap gap-5 items-center">
                   <p>
                     Jami navbatlar:{" "}
@@ -1361,11 +2645,10 @@ export default function App() {
                   </table>
                 </div>
 
-                <h3 className="mt-10 text-base font-bold text-white">Berilgan cheklar (bemorlar)</h3>
+                <h3 className="mt-10 text-base font-bold text-white">Berilgan cheklar</h3>
                 <p className="text-xs text-white/45 mb-3">
                   Ro&apos;yxat: navbat olingan vaqt (
-                  {reportData?.timezone || "Asia/Tashkent"}) bo&apos;yicha. Eski cheklarda bemor maydonlari bo&apos;sh
-                  bo&apos;lishi mumkin.
+                  {reportData?.timezone || "Asia/Tashkent"}) bo&apos;yicha.
                 </p>
                 <div className="mt-2 overflow-x-auto rounded-xl border border-white/10">
                   <table className="min-w-full border-collapse text-sm">
@@ -1373,11 +2656,6 @@ export default function App() {
                       <tr>
                         <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
                           Sana va soat
-                        </th>
-                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Ism</th>
-                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Familiya</th>
-                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
-                          Telefon
                         </th>
                         <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
                           Navbat
@@ -1392,7 +2670,7 @@ export default function App() {
                       {(reportData.ticketLog || []).length === 0 ? (
                         <tr>
                           <td
-                            colSpan={9}
+                            colSpan={6}
                             className="border-b border-white/10 px-4 py-6 text-center text-white/45"
                           >
                             Bu sanalar oralig&apos;ida chek topilmadi.
@@ -1403,15 +2681,6 @@ export default function App() {
                           <tr key={row.ticketId || `${row.createdAt}-${row.queueCode}`} className="odd:bg-black/20 even:bg-black/10">
                             <td className="border-b border-white/10 px-3 py-2.5 font-mono text-xs whitespace-nowrap text-white/90">
                               {formatReportDateTime(row.createdAt, reportData.timezone)}
-                            </td>
-                            <td className="border-b border-white/10 px-3 py-2.5 text-white">
-                              {row.patientFirstName || "—"}
-                            </td>
-                            <td className="border-b border-white/10 px-3 py-2.5 text-white">
-                              {row.patientLastName || "—"}
-                            </td>
-                            <td className="border-b border-white/10 px-3 py-2.5 font-mono text-xs text-teal-200/90 whitespace-nowrap">
-                              {row.patientPhone || "—"}
                             </td>
                             <td className="border-b border-white/10 px-3 py-2.5 font-mono font-bold text-teal-300 whitespace-nowrap">
                               {row.queueCode || "—"}
@@ -1491,11 +2760,6 @@ export default function App() {
                         <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
                           Sana va soat
                         </th>
-                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Ism</th>
-                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Familiya</th>
-                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
-                          Telefon
-                        </th>
                         <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
                           Navbat
                         </th>
@@ -1512,7 +2776,7 @@ export default function App() {
                       {(ordersLogData.rows || []).length === 0 ? (
                         <tr>
                           <td
-                            colSpan={10}
+                            colSpan={7}
                             className="border-b border-white/10 px-4 py-8 text-center text-white/45"
                           >
                             Hozircha berilgan chek yo&apos;q.
@@ -1526,15 +2790,6 @@ export default function App() {
                           >
                             <td className="border-b border-white/10 px-3 py-2.5 font-mono text-xs whitespace-nowrap text-white/90">
                               {formatReportDateTime(row.createdAt, ordersLogData.timezone)}
-                            </td>
-                            <td className="border-b border-white/10 px-3 py-2.5 text-white">
-                              {row.patientFirstName || "—"}
-                            </td>
-                            <td className="border-b border-white/10 px-3 py-2.5 text-white">
-                              {row.patientLastName || "—"}
-                            </td>
-                            <td className="border-b border-white/10 px-3 py-2.5 font-mono text-xs text-teal-200/90 whitespace-nowrap">
-                              {row.patientPhone || "—"}
                             </td>
                             <td className="border-b border-white/10 px-3 py-2.5 font-mono font-bold text-teal-300 whitespace-nowrap">
                               {row.queueCode || "—"}
@@ -1570,16 +2825,17 @@ export default function App() {
           </section>
         ) : null}
 
-        {activePage === PAGES.patients ? (
+        {activePage === PAGES.registrationOrders ? (
           <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6">
             <div className="flex flex-wrap items-end gap-3 mb-5">
               <label className="text-xs text-white/60 block">
-                Cheklardan skaner (so&apos;nggi)
+                Maks. qatorlar
                 <select
                   className="mt-1 block rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-white text-sm"
-                  value={patientsScanLimit}
-                  onChange={(e) => setPatientsScanLimit(Number(e.target.value) || 8000)}
+                  value={registrationOrdersLimit}
+                  onChange={(e) => setRegistrationOrdersLimit(Number(e.target.value) || 8000)}
                 >
+                  <option value={4000}>4 000</option>
                   <option value={8000}>8 000</option>
                   <option value={12000}>12 000</option>
                   <option value={20000}>20 000</option>
@@ -1589,196 +2845,681 @@ export default function App() {
               <button
                 type="button"
                 className="px-4 py-2 rounded-lg bg-teal-500 text-black font-bold text-sm"
-                onClick={() => void fetchPatients()}
-                disabled={isPatientsLoading}
+                onClick={() => void fetchRegistrationOrdersLog()}
+                disabled={isRegistrationOrdersLoading}
               >
-                {isPatientsLoading ? "Yuklanmoqda..." : "Yangilash"}
+                {isRegistrationOrdersLoading ? "Yuklanmoqda..." : "Yangilash"}
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-lg bg-white/10 text-white font-semibold text-sm hover:bg-white/15"
+                onClick={() => {
+                  setIsRegistrationPatientsModalOpen(true);
+                  if (!registrationPatientsData && !isRegistrationPatientsLoading) {
+                    void fetchRegistrationPatients();
+                  }
+                }}
+              >
+                Bemorlar bo&apos;yicha
               </button>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5 w-full max-w-xl">
-              <label className="text-xs text-white/60 block">
-                Filtr: ism
-                <input
-                  type="search"
-                  autoComplete="off"
-                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-white text-sm outline-none focus:border-teal-400/50"
-                  placeholder="Qisman yozing…"
-                  value={patientsFilterFirstName}
-                  onChange={(e) => setPatientsFilterFirstName(e.target.value)}
-                />
-              </label>
-              <label className="text-xs text-white/60 block">
-                Filtr: familiya
-                <input
-                  type="search"
-                  autoComplete="off"
-                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-white text-sm outline-none focus:border-teal-400/50"
-                  placeholder="Qisman yozing…"
-                  value={patientsFilterLastName}
-                  onChange={(e) => setPatientsFilterLastName(e.target.value)}
-                />
-              </label>
-            </div>
-
-            {patientsData ? (
+            {registrationOrdersData ? (
               <>
                 <div className="text-sm text-white/80 flex flex-wrap gap-4 mb-4">
                   <p>
-                    Bemorlar (guruh):{" "}
-                    <strong className="text-teal-300">{patientsData.patients?.length ?? 0}</strong>
+                    Ko&apos;rsatilgan:{" "}
+                    <strong className="text-teal-300">{registrationOrdersData.summary?.count ?? 0}</strong>
                   </p>
-                  {patientsFilterFirstName.trim() || patientsFilterLastName.trim() ? (
-                    <p>
-                      Filtr natijasi:{" "}
-                      <strong className="text-teal-300">{patientsFiltered.length}</strong>
-                    </p>
+                  <p>
+                    Xotirada jami:{" "}
+                    <strong className="text-teal-300">{registrationOrdersData.totalInMemory ?? 0}</strong>
+                  </p>
+                  {registrationOrdersData.truncated ? (
+                    <p className="text-amber-200/90">Ro&apos;yxat chegaraga yetdi — limitni oshiring.</p>
                   ) : null}
                   <p>
-                    Skanerlangan cheklar:{" "}
-                    <strong className="text-teal-300">{patientsData.scannedOrders ?? 0}</strong>
+                    Jami narx (ko&apos;rsatilgan):{" "}
+                    <strong className="text-teal-300">
+                      {Number(registrationOrdersData.summary?.totalRevenue || 0).toLocaleString("uz-UZ")} so&apos;m
+                    </strong>
                   </p>
-                  {patientsData.truncated ? (
-                    <p className="text-amber-200/90">Bazada yana cheklar bor — limitni oshiring.</p>
-                  ) : null}
                 </div>
 
-                <div className="space-y-2">
-                  {(patientsData.patients || []).length === 0 ? (
-                    <p className="text-sm text-white/45 py-6 text-center">Hozircha bemor (chek bilan) topilmadi.</p>
-                  ) : patientsFiltered.length === 0 ? (
-                    <p className="text-sm text-amber-200/90 py-6 text-center">
-                      Filtrga mos bemor topilmadi — ism yoki familiyani o&apos;zgartiring.
-                    </p>
-                  ) : (
-                    patientsFiltered.map((p) => {
-                      const open = expandedPatientKey === p.groupKey;
-                      const name = [p.patientFirstName, p.patientLastName].filter(Boolean).join(" ").trim();
-                      return (
-                        <div
-                          key={p.groupKey}
-                          className="rounded-xl border border-white/10 bg-black/25 overflow-hidden"
-                        >
-                          <button
-                            type="button"
-                            className="w-full flex flex-wrap items-center gap-3 px-4 py-3.5 text-left hover:bg-white/5 transition"
-                            onClick={() =>
-                              setExpandedPatientKey((k) => (k === p.groupKey ? null : p.groupKey))
-                            }
+                <div className="overflow-x-auto rounded-xl border border-white/10">
+                  <table className="min-w-full border-collapse text-sm">
+                    <thead className="bg-white/5 text-white/70">
+                      <tr>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
+                          Sana va soat
+                        </th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
+                          Chek raqami
+                        </th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Mijoz</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Telefon</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Xizmat</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
+                          To&apos;lov turi
+                        </th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
+                          Status
+                        </th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
+                          Bekor qilgan / izoh
+                        </th>
+                        <th className="border-b border-white/10 px-3 py-3 text-right font-semibold">Narx</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(registrationOrdersData.rows || []).length === 0 ? (
+                        <tr>
+                          <td
+                            colSpan={9}
+                            className="border-b border-white/10 px-4 py-8 text-center text-white/45"
                           >
-                            <div className="flex-1 min-w-[12rem]">
-                              <div className="text-base font-bold text-white">{name || "Ismsiz bemor"}</div>
-                              <div className="text-sm font-mono text-teal-200/85">{p.patientPhone || "—"}</div>
-                            </div>
-                            <div className="text-right text-sm text-white/80">
-                              <div>
-                                <span className="text-white/45">Tashriflar:</span>{" "}
-                                <strong className="text-white">{p.visitCount}</strong>
-                              </div>
-                              <div className="text-teal-300 font-semibold tabular-nums">
-                                {Number(p.totalSpent || 0).toLocaleString("uz-UZ")} so&apos;m
-                              </div>
-                            </div>
-                            <span className="text-white/45 text-lg w-8 text-center shrink-0">{open ? "▲" : "▼"}</span>
-                          </button>
-
-                          {open ? (
-                            <div className="border-t border-white/10 bg-black/35 px-3 pb-4 pt-3">
-                              <p className="text-xs text-white/50 mb-3 m-0">
-                                Birinchi tashrif:{" "}
-                                <span className="text-white/80 font-mono">
-                                  {formatReportDateTime(p.firstVisitAt, patientsData.timezone)}
+                            Hozircha registratsiyadan tushgan buyurtma yo&apos;q.
+                          </td>
+                        </tr>
+                      ) : (
+                        (registrationOrdersData.rows || []).map((row) => (
+                          <tr
+                            key={row.ticketId || `${row.createdAt}-${row.queueCode}`}
+                            className="odd:bg-black/20 even:bg-black/10"
+                          >
+                            <td className="border-b border-white/10 px-3 py-2.5 font-mono text-xs whitespace-nowrap text-white/90">
+                              {formatReportDateTime(row.createdAt, registrationOrdersData.timezone)}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 font-mono font-bold text-teal-300 whitespace-nowrap">
+                              {row.queueCode || "—"}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white/85">
+                              {[row.patientFirstName, row.patientLastName].filter(Boolean).join(" ") || "—"}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white/80">
+                              {row.patientPhone || "—"}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white/80">{row.service || "—"}</td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white/90 whitespace-nowrap">
+                              {formatPaymentMethodLabel(row.paymentMethod)}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 whitespace-nowrap">
+                              {String(row.cashierStatus || "").toLowerCase() === "confirmed" ? (
+                                <span className="rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-200">
+                                  Tasdiqlandi
                                 </span>
-                                {" · "}
-                                Oxirgi:{" "}
-                                <span className="text-white/80 font-mono">
-                                  {formatReportDateTime(p.lastVisitAt, patientsData.timezone)}
+                              ) : String(row.cashierStatus || "").toLowerCase() === "cancelled" ? (
+                                <span className="rounded-full border border-red-400/30 bg-red-500/15 px-2 py-1 text-[11px] font-semibold text-red-200">
+                                  Bekor qilindi
                                 </span>
-                              </p>
-                              <div className="overflow-x-auto rounded-lg border border-white/10">
-                                <table className="min-w-full border-collapse text-sm">
-                                  <thead className="bg-white/5 text-white/65">
-                                    <tr>
-                                      <th className="border-b border-white/10 px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                                        Sana va soat
-                                      </th>
-                                      <th className="border-b border-white/10 px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                                        Navbat
-                                      </th>
-                                      <th className="border-b border-white/10 px-3 py-2.5 text-left font-semibold">
-                                        Bo&apos;lim
-                                      </th>
-                                      <th className="border-b border-white/10 px-3 py-2.5 text-left font-semibold">
-                                        Xizmat
-                                      </th>
-                                      <th className="border-b border-white/10 px-3 py-2.5 text-left font-semibold">
-                                        Shifokor
-                                      </th>
-                                      <th className="border-b border-white/10 px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                                        Xona
-                                      </th>
-                                      <th className="border-b border-white/10 px-3 py-2.5 text-right font-semibold">
-                                        Narx
-                                      </th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {(p.visits || []).map((v) => (
-                                      <tr key={v.ticketId} className="odd:bg-black/15 even:bg-black/10">
-                                        <td className="border-b border-white/10 px-3 py-2 font-mono text-xs whitespace-nowrap text-white/90">
-                                          {formatReportDateTime(v.createdAt, patientsData.timezone)}
-                                        </td>
-                                        <td className="border-b border-white/10 px-3 py-2 font-mono font-bold text-teal-300 whitespace-nowrap">
-                                          {v.queueCode || "—"}
-                                        </td>
-                                        <td className="border-b border-white/10 px-3 py-2 text-white/85">
-                                          {v.section || "—"}
-                                        </td>
-                                        <td className="border-b border-white/10 px-3 py-2 text-white/80">
-                                          {v.service || "—"}
-                                        </td>
-                                        <td className="border-b border-white/10 px-3 py-2 text-white/80">
-                                          {[v.doctorFirstName, v.doctorLastName].filter(Boolean).join(" ") || "—"}
-                                        </td>
-                                        <td className="border-b border-white/10 px-3 py-2 text-white/70 whitespace-nowrap">
-                                          {v.roomNumber || "—"}
-                                        </td>
-                                        <td className="border-b border-white/10 px-3 py-2 text-right whitespace-nowrap text-white/90">
-                                          {Number(v.price || 0).toLocaleString("uz-UZ")} so&apos;m
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })
-                  )}
+                              ) : (
+                                <span className="rounded-full border border-amber-400/30 bg-amber-500/15 px-2 py-1 text-[11px] font-semibold text-amber-100">
+                                  Kutilmoqda
+                                </span>
+                              )}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-xs text-white/75">
+                              {String(row.cashierStatus || "").toLowerCase() === "cancelled" ? (
+                                <div className="space-y-0.5">
+                                  <div>
+                                    <span className="text-white/45">Kim:</span>{" "}
+                                    <span className="text-red-200 font-semibold">
+                                      {cashierNameById.get(String(row.cashierId || "").trim()) ||
+                                        String(row.cashierId || "").trim() ||
+                                        "Noma'lum"}
+                                    </span>
+                                  </div>
+                                  <div>
+                                    <span className="text-white/45">Izoh:</span>{" "}
+                                    <span className="text-white/85">{row.cashierCancelReason || "—"}</span>
+                                  </div>
+                                </div>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-right text-white/90 whitespace-nowrap">
+                              {Number(row.price || 0).toLocaleString("uz-UZ")} so&apos;m
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </>
             ) : (
-              <p className="text-sm text-white/45">{isPatientsLoading ? "Yuklanmoqda..." : "Ma'lumot yo'q."}</p>
+              <p className="text-sm text-white/45">
+                {isRegistrationOrdersLoading ? "Yuklanmoqda..." : "Ma'lumot yo'q."}
+              </p>
             )}
           </section>
         ) : null}
 
+        {isRegistrationPatientsModalOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-5xl rounded-2xl border border-white/10 bg-[#101114] p-6 shadow-2xl max-h-[90vh] overflow-hidden">
+              <div className="mb-5 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Bemorlar bo&apos;yicha</h3>
+                  <p className="text-xs text-white/50 mt-1">
+                    Bir xil ism/familiya (va telefon) bo&apos;yicha registratsiyadagi buyurtmalar bitta kartada jamlanadi.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="rounded-lg bg-white/10 px-3 py-2 text-sm text-white/85 hover:bg-white/15"
+                    onClick={() => void fetchRegistrationPatients()}
+                    disabled={isRegistrationPatientsLoading}
+                  >
+                    {isRegistrationPatientsLoading ? "Yuklanmoqda..." : "Yangilash"}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-lg border border-white/20 px-3 py-2 text-sm text-white/80 hover:bg-white/10"
+                    onClick={() => setIsRegistrationPatientsModalOpen(false)}
+                  >
+                    Yopish
+                  </button>
+                </div>
+              </div>
+
+              {registrationPatientsData ? (
+                <div className="mb-4 flex flex-wrap gap-4 text-sm text-white/75">
+                  <p>
+                    Bemorlar:{" "}
+                    <strong className="text-teal-300">
+                      {filteredRegistrationPatients.length}
+                    </strong>
+                  </p>
+                  <p>
+                    Tahlil qilingan buyurtmalar:{" "}
+                    <strong className="text-teal-300">{registrationPatientsData.scannedOrders ?? 0}</strong>
+                  </p>
+                </div>
+              ) : null}
+
+              <div className="mb-4">
+                <input
+                  type="text"
+                  className="w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm text-white outline-none focus:border-teal-400/60"
+                  placeholder="Ism Familiya bo'yicha filter"
+                  value={registrationPatientsQuery}
+                  onChange={(e) => setRegistrationPatientsQuery(e.target.value)}
+                />
+              </div>
+
+              <div className="overflow-y-auto pr-1 max-h-[70vh]">
+                {isRegistrationPatientsLoading && !registrationPatientsData ? (
+                  <p className="text-sm text-white/55">Yuklanmoqda...</p>
+                ) : null}
+                {registrationPatientsData && Array.isArray(registrationPatientsData.patients) ? (
+                  filteredRegistrationPatients.length === 0 ? (
+                    <p className="text-sm text-white/55">Hozircha registratsiya bo&apos;yicha bemorlar topilmadi.</p>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-3">
+                      {filteredRegistrationPatients.map((patient) => (
+                        <article
+                          key={patient.groupKey}
+                          className="rounded-xl border border-white/10 bg-black/25 p-4"
+                        >
+                          <button
+                            type="button"
+                            className="w-full text-left"
+                            onClick={() =>
+                              setExpandedRegistrationPatients((prev) => ({
+                                ...prev,
+                                [patient.groupKey]: !prev[patient.groupKey]
+                              }))
+                            }
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div>
+                                <p className="text-base font-semibold text-white">
+                                  {[patient.patientFirstName, patient.patientLastName].filter(Boolean).join(" ") || "Noma&apos;lum"}
+                                </p>
+                                <p className="text-xs text-white/55">{patient.patientPhone || "Telefon yo&apos;q"}</p>
+                                <button
+                                  type="button"
+                                  className="mt-2 rounded-md bg-teal-500 px-2.5 py-1 text-[11px] font-bold text-black hover:bg-teal-400 disabled:opacity-60"
+                                  disabled={printingRegistrationPatientKey === patient.groupKey}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void printRegistrationPatientSummary(patient);
+                                  }}
+                                >
+                                  {printingRegistrationPatientKey === patient.groupKey ? "..." : "Umumiy chek"}
+                                </button>
+                              </div>
+                              <div className="text-right text-xs text-white/60">
+                                <p>Tashrif: {patient.visitCount || 0}</p>
+                                <p className="text-teal-300 font-semibold">
+                                  {Number(patient.totalSpent || 0).toLocaleString("uz-UZ")} so&apos;m
+                                </p>
+                                <p className="text-white/50 mt-1">
+                                  {expandedRegistrationPatients[patient.groupKey] ? "Yopish ▲" : "Pastga ochish ▼"}
+                                </p>
+                              </div>
+                            </div>
+                          </button>
+                          {expandedRegistrationPatients[patient.groupKey] ? (
+                            <div className="mt-3 space-y-1.5">
+                              {(patient.visits || []).map((visit) => (
+                                <div
+                                  key={visit.ticketId || `${visit.createdAt}-${visit.queueCode}`}
+                                  className="flex items-center justify-between rounded-lg bg-white/5 px-3 py-2 text-xs"
+                                >
+                                  <div className="min-w-0">
+                                    <p className="truncate text-white/90">
+                                      {visit.service || "Xizmat"} ({visit.queueCode || "—"})
+                                    </p>
+                                    <p className="text-white/50">
+                                      {formatReportDateTime(visit.createdAt, registrationPatientsData.timezone)}
+                                    </p>
+                                  </div>
+                                  <p className="ml-3 whitespace-nowrap text-white/80">
+                                    {Number(visit.price || 0).toLocaleString("uz-UZ")} so&apos;m
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </article>
+                      ))}
+                    </div>
+                  )
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {activePage === PAGES.registrationDepartments ? (
+          <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold text-white">Registratsiya bo'limlari</h2>
+              <TapButton
+                type="button"
+                className="rounded-lg bg-teal-500 px-4 py-2 text-sm font-semibold text-black transition hover:bg-teal-400"
+                onClick={() => void saveRegistrationDepartments()}
+              >
+                Saqlash
+              </TapButton>
+            </div>
+            <div className="space-y-2">
+              {registrationDepartments.map((row, index) => (
+                <div key={`${row.section || "dept"}-${index}`} className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                  <input
+                    className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                    placeholder="Bo'lim kodi"
+                    value={row.section || ""}
+                    onChange={(e) => {
+                      const copy = [...registrationDepartments];
+                      copy[index].section = e.target.value.toUpperCase();
+                      setRegistrationDepartments(copy);
+                    }}
+                  />
+                  <input
+                    className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                    placeholder="Bo'lim nomi (ixtiyoriy)"
+                    value={row.title || ""}
+                    onChange={(e) => {
+                      const copy = [...registrationDepartments];
+                      copy[index].title = e.target.value;
+                      setRegistrationDepartments(copy);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="rounded bg-red-500/20 text-red-200 text-sm"
+                    onClick={() => setRegistrationDepartments((prev) => prev.filter((_, i) => i !== index))}
+                  >
+                    O'chirish
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-2">
+              <input
+                className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                placeholder="Yangi bo'lim kodi"
+                value={newRegistrationDepartmentDraft.section}
+                onChange={(e) =>
+                  setNewRegistrationDepartmentDraft((p) => ({ ...p, section: e.target.value.toUpperCase() }))
+                }
+              />
+              <input
+                className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                placeholder="Yangi bo'lim nomi (ixtiyoriy)"
+                value={newRegistrationDepartmentDraft.title}
+                onChange={(e) => setNewRegistrationDepartmentDraft((p) => ({ ...p, title: e.target.value }))}
+              />
+              <button
+                type="button"
+                className="rounded bg-white/10 text-sm"
+                onClick={addRegistrationDepartment}
+              >
+                + Bo'lim qo'shish
+              </button>
+            </div>
+          </section>
+        ) : null}
+
+        {activePage === PAGES.registration ? (
+          <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6 space-y-8">
+            <div>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <h2 className="text-lg font-semibold text-white">Registratsiyalar</h2>
+                <div className="flex flex-wrap gap-2">
+                  <TapButton
+                    type="button"
+                    className="px-3 py-2 rounded bg-teal-500 text-black text-sm font-semibold hover:bg-teal-400"
+                    onClick={() => void saveRegistrations()}
+                  >
+                    Saqlash
+                  </TapButton>
+                  <TapButton type="button" className="px-3 py-2 rounded bg-white/10 text-sm" onClick={openAddRegistrationModal}>
+                    + Registratsiya qo'shish
+                  </TapButton>
+                </div>
+              </div>
+              <div className="space-y-3">
+                {registrations.map((row, index) => (
+                  <div key={`${row.id || "registratsiya"}-${index}`} className="rounded-lg border border-white/10 bg-black/25 p-3">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <input
+                        className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                        placeholder="Registratsiya ID (ixtiyoriy)"
+                        value={row.id || ""}
+                        onChange={(e) => {
+                          const copy = [...registrations];
+                          copy[index].id = e.target.value;
+                          setRegistrations(copy);
+                        }}
+                      />
+                      <input
+                        className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                        placeholder="Registratsiya nomi"
+                        value={row.name || ""}
+                        onChange={(e) => {
+                          const copy = [...registrations];
+                          copy[index].name = e.target.value;
+                          setRegistrations(copy);
+                        }}
+                      />
+                      <input
+                        className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                        placeholder="Login"
+                        value={row.login || ""}
+                        onChange={(e) => {
+                          const copy = [...registrations];
+                          copy[index].login = e.target.value;
+                          setRegistrations(copy);
+                        }}
+                      />
+                      <input
+                        className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                        placeholder="Parol"
+                        value={row.password || ""}
+                        onChange={(e) => {
+                          const copy = [...registrations];
+                          copy[index].password = e.target.value;
+                          setRegistrations(copy);
+                        }}
+                      />
+                      <label className="flex items-center gap-2 text-sm text-white/80">
+                        <input
+                          type="checkbox"
+                          checked={row.enabled !== false}
+                          onChange={(e) => {
+                            const copy = [...registrations];
+                            copy[index].enabled = e.target.checked;
+                            setRegistrations(copy);
+                          }}
+                        />
+                        Aktiv
+                      </label>
+                      <div className="md:col-span-2 flex justify-end pt-1">
+                        <button
+                          type="button"
+                          className="rounded-lg border border-red-500/45 bg-red-500/15 px-4 py-2 text-sm text-red-100 hover:bg-red-500/25"
+                          onClick={() => removeRegistrationAt(index)}
+                        >
+                          Registratsiyani o&apos;chirish
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+          </section>
+        ) : null}
+
+        {activePage === PAGES.registrationServices ? (
+          <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold text-white">Registratsiya xizmatlari</h2>
+              <TapButton
+                type="button"
+                className="px-3 py-2 rounded bg-white/10 text-sm"
+                onClick={() => {
+                  if (!registrationDepartments.length) {
+                    window.alert("Avval «Registratsiya bo'limlari»da bo'lim qo'shing.");
+                    return;
+                  }
+                  setIsRegistrationServiceModalOpen(true);
+                }}
+              >
+                + Xizmat qo'shish
+              </TapButton>
+            </div>
+            <div className="space-y-2">
+              {registrationServices.map((row, index) => (
+                <div key={`${row.id || "srv"}-${index}`} className="grid grid-cols-1 md:grid-cols-5 gap-2">
+                  <select
+                    className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                    value={row.section || ""}
+                    onChange={(e) => {
+                      const copy = [...registrationServices];
+                      copy[index].section = e.target.value.toUpperCase();
+                      setRegistrationServices(copy);
+                    }}
+                  >
+                    <option value="">Bo'limni tanlang...</option>
+                    {registrationDepartments.map((d) => (
+                      <option key={d.section} value={d.section}>
+                        {d.section}
+                        {d.title ? ` — ${d.title}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                    placeholder="Xizmat nomi"
+                    value={row.name || ""}
+                    onChange={(e) => {
+                      const copy = [...registrationServices];
+                      copy[index].name = e.target.value;
+                      setRegistrationServices(copy);
+                    }}
+                  />
+                  <input
+                    className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                    placeholder="Shifokor ismi"
+                    value={row.doctorName || ""}
+                    onChange={(e) => {
+                      const copy = [...registrationServices];
+                      copy[index].doctorName = e.target.value;
+                      setRegistrationServices(copy);
+                    }}
+                  />
+                  <input
+                    className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                    type="number"
+                    placeholder="Narx"
+                    value={row.price || 0}
+                    onChange={(e) => {
+                      const copy = [...registrationServices];
+                      copy[index].price = Number(e.target.value || 0);
+                      setRegistrationServices(copy);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="rounded bg-red-500/20 text-red-200 text-sm"
+                    onClick={() => setRegistrationServices((prev) => prev.filter((_, i) => i !== index))}
+                  >
+                    O'chirish
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {isAddRegistrationModalOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-xl rounded-2xl border border-white/10 bg-[#101114] p-6 shadow-2xl">
+              <div className="mb-5 flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-white">Yangi registratsiya qo&apos;shish</h3>
+                <button
+                  type="button"
+                  className="rounded-lg border border-white/20 px-3 py-1.5 text-sm text-white/80 hover:bg-white/10"
+                  onClick={() => {
+                    setIsAddRegistrationModalOpen(false);
+                    setNewRegistrationDraft(emptyRegistrationDraft);
+                  }}
+                >
+                  Yopish
+                </button>
+              </div>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <input
+                  className="bg-black/40 border border-white/10 rounded px-3 py-2 md:col-span-2"
+                  placeholder="Registratsiya nomi"
+                  value={newRegistrationDraft.name}
+                  onChange={(e) => setNewRegistrationDraft((p) => ({ ...p, name: e.target.value }))}
+                />
+                <input
+                  className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                  placeholder="Login"
+                  value={newRegistrationDraft.login}
+                  onChange={(e) => setNewRegistrationDraft((p) => ({ ...p, login: e.target.value }))}
+                />
+                <input
+                  className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                  placeholder="Parol"
+                  value={newRegistrationDraft.password}
+                  onChange={(e) => setNewRegistrationDraft((p) => ({ ...p, password: e.target.value }))}
+                />
+                <label className="flex items-center gap-2 text-sm text-white/80 md:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={newRegistrationDraft.enabled !== false}
+                    onChange={(e) => setNewRegistrationDraft((p) => ({ ...p, enabled: e.target.checked }))}
+                  />
+                  Aktiv
+                </label>
+              </div>
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  type="button"
+                  className="rounded-lg border border-white/20 px-4 py-2 text-sm text-white/75 hover:bg-white/10"
+                  onClick={() => {
+                    setIsAddRegistrationModalOpen(false);
+                    setNewRegistrationDraft(emptyRegistrationDraft);
+                  }}
+                >
+                  Bekor qilish
+                </button>
+                <TapButton
+                  type="button"
+                  className="rounded-lg bg-teal-500 px-5 py-2 text-sm font-bold text-black hover:bg-teal-400"
+                  onClick={addRegistrationFromModal}
+                >
+                  Qo&apos;shish
+                </TapButton>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {isRegistrationServiceModalOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-xl rounded-2xl border border-white/10 bg-[#101114] p-6 shadow-2xl">
+              <div className="mb-5 flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-white">Registratsiya xizmati qo'shish</h3>
+                <button
+                  type="button"
+                  className="rounded-lg border border-white/20 px-3 py-1.5 text-sm text-white/80 hover:bg-white/10"
+                  onClick={() => setIsRegistrationServiceModalOpen(false)}
+                >
+                  Yopish
+                </button>
+              </div>
+              <div className="grid grid-cols-1 gap-3">
+                <select
+                  className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                  value={newRegistrationService.section}
+                  onChange={(e) => setNewRegistrationService((p) => ({ ...p, section: e.target.value.toUpperCase() }))}
+                >
+                  <option value="">Bo'limni tanlang...</option>
+                  {registrationDepartments.map((d) => (
+                    <option key={d.section} value={d.section}>
+                      {d.section}
+                      {d.title ? ` — ${d.title}` : ""}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                  placeholder="Xizmat nomi"
+                  value={newRegistrationService.name}
+                  onChange={(e) => setNewRegistrationService((p) => ({ ...p, name: e.target.value }))}
+                />
+                <input
+                  className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                  placeholder="Shifokor ismi"
+                  value={newRegistrationService.doctorName}
+                  onChange={(e) => setNewRegistrationService((p) => ({ ...p, doctorName: e.target.value }))}
+                />
+                <input
+                  className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                  type="number"
+                  placeholder="Narx"
+                  value={newRegistrationService.price}
+                  onChange={(e) => setNewRegistrationService((p) => ({ ...p, price: Number(e.target.value || 0) }))}
+                />
+              </div>
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  type="button"
+                  className="rounded-lg border border-white/20 px-4 py-2 text-sm text-white/75 hover:bg-white/10"
+                  onClick={() => setIsRegistrationServiceModalOpen(false)}
+                >
+                  Bekor qilish
+                </button>
+                <TapButton
+                  type="button"
+                  className="rounded-lg bg-teal-500 px-5 py-2 text-sm font-bold text-black hover:bg-teal-400"
+                  onClick={addRegistrationServiceFromModal}
+                >
+                  Qo'shish
+                </TapButton>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {activePage === PAGES.settings ? (
           <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6">
-            <h2 className="text-lg font-semibold text-white mb-2">Atlas sync</h2>
+            <h2 className="text-lg font-semibold text-white mb-2">Sozlamalar</h2>
             <p className="text-sm text-white/60 mb-5">
-              Internet mavjud bo'lsa, Compass (lokal MongoDB) dagi joriy holat Atlas bazaga yuboriladi.
+              Atlas sync API o'chirildi. Bu bo'limda qo'shimcha sozlamalar keyin qo'shiladi.
             </p>
-            <button
-              type="button"
-              onClick={syncAtlasFromSettings}
-              disabled={isSyncingAtlas}
-              className="px-5 py-2.5 rounded bg-teal-500 text-black font-bold text-sm disabled:opacity-60"
-            >
-              {isSyncingAtlas ? "Sync qilinmoqda..." : "Sync qilish"}
-            </button>
           </section>
         ) : null}
 
@@ -1878,64 +3619,732 @@ export default function App() {
         </div>
       </section>
 
-      <section className="bg-white/5 border border-white/10 rounded-xl p-6">
-        <h2 className="text-xl font-semibold mb-4">Printer</h2>
-        <div className="grid grid-cols-2 gap-3">
-          <input
-            className="bg-black/40 border border-white/10 rounded px-3 py-2"
-            value={printerTarget}
-            onChange={(e) => setPrinterTarget(e.target.value)}
-            placeholder="usb://... yoki ip"
-          />
-          <input
-            className="bg-black/40 border border-white/10 rounded px-3 py-2"
-            type="number"
-            value={printerPort}
-            onChange={(e) => setPrinterPort(Number(e.target.value))}
-            placeholder="port"
-          />
-        </div>
+          </>
+        ) : null}
 
-        <div className="flex gap-3 mt-4">
-          <button className="px-4 py-2 bg-teal-500 text-black rounded" onClick={savePrinter}>
-            Printerni saqlash
-          </button>
-          <button className="px-4 py-2 bg-white/10 rounded" onClick={loadDevicePrinters}>
-            Device printerlarni ko'rish
-          </button>
-        </div>
+        {activePage === PAGES.printer ? (
+          <section className="bg-white/5 border border-white/10 rounded-xl p-6">
+            <h2 className="text-xl font-semibold mb-4">Printer</h2>
+            <div className="grid grid-cols-2 gap-3">
+              <input
+                className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                value={printerTarget}
+                onChange={(e) => setPrinterTarget(e.target.value)}
+                placeholder="usb://... yoki ip"
+              />
+              <input
+                className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                type="number"
+                value={printerPort}
+                onChange={(e) => setPrinterPort(Number(e.target.value))}
+                placeholder="port"
+              />
+            </div>
 
-        <div className="mt-4 space-y-2">
-          {printers.map((printer) => (
-            <div
-              key={printer.queue}
-              className={`p-3 rounded border ${
-                selectedPrinterUri === printer.uri
-                  ? "bg-teal-500/10 border-teal-400"
-                  : "bg-black/30 border-white/10"
-              }`}
-            >
-              <div className="font-semibold">{printer.queue}</div>
-              <div className="text-xs text-white/70 mb-3">{printer.uri}</div>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => handleSelectPrinter(printer)}
-                  className="px-3 py-1 rounded bg-white/10 text-xs"
+            <div className="flex gap-3 mt-4">
+              <button className="px-4 py-2 bg-teal-500 text-black rounded" onClick={savePrinter}>
+                Printerni saqlash
+              </button>
+              <button
+                className="px-4 py-2 bg-white/10 rounded disabled:opacity-50"
+                disabled={isLoadingDevicePrinters}
+                onClick={() => void loadDevicePrinters()}
+              >
+                {isLoadingDevicePrinters ? "Aniqlanmoqda..." : "Device printerlarni ko'rish"}
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              {printers.map((printer) => (
+                <div
+                  key={printer.queue}
+                  className={`p-3 rounded border ${
+                    selectedPrinterUri === printer.uri
+                      ? "bg-teal-500/10 border-teal-400"
+                      : "bg-black/30 border-white/10"
+                  }`}
                 >
-                  Tanlash
-                </button>
-                <button
-                  onClick={() => savePrinterFromDevice(printer.uri)}
-                  className="px-3 py-1 rounded bg-teal-500 text-black text-xs font-semibold"
-                >
-                  Tanla va saqla
-                </button>
+                  <div className="font-semibold">{printer.queue}</div>
+                  <div className="text-xs text-white/70 mb-3">{printer.uri}</div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleSelectPrinter(printer)}
+                      className="px-3 py-1 rounded bg-white/10 text-xs"
+                    >
+                      Tanlash
+                    </button>
+                    <button
+                      onClick={() => savePrinterFromDevice(printer.uri)}
+                      className="px-3 py-1 rounded bg-teal-500 text-black text-xs font-semibold"
+                    >
+                      Tanla va saqla
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {activePage === PAGES.cashier ? (
+          <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6">
+            <h2 className="text-lg font-semibold text-white mb-2">Kassa printeri</h2>
+            <p className="text-sm text-white/65 mb-4">
+              Kassa orqali &quot;Tasdiqlash va chek chiqarish&quot; bosilganda chek aynan shu manzilga yuboriladi
+              (masalan <span className="text-white/90">windows://Printer nomi</span>). Bo&apos;sh qoldirsangiz, umumiy
+              Printer sahifasidagi sozlama ishlatiladi.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+              <div>
+                <label className="block text-xs text-white/60 mb-1">Printer manzili</label>
+                <input
+                  className="w-full bg-black/40 border border-white/10 rounded px-3 py-2"
+                  placeholder="windows://..."
+                  value={cashierPrinterTarget}
+                  onChange={(e) => setCashierPrinterTarget(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-white/60 mb-1">Port</label>
+                <input
+                  type="number"
+                  className="w-full bg-black/40 border border-white/10 rounded px-3 py-2"
+                  value={cashierPrinterPort}
+                  onChange={(e) => setCashierPrinterPort(Number(e.target.value) || 9100)}
+                />
               </div>
             </div>
-          ))}
-        </div>
-      </section>
-          </>
+            <TapButton
+              type="button"
+              className="rounded bg-teal-500 px-4 py-2 text-sm font-semibold text-black mb-8"
+              onClick={() => void saveCashierPrinter()}
+            >
+              Kassa printerini saqlash
+            </TapButton>
+            <div className="mb-3">
+              <TapButton
+                type="button"
+                className="rounded bg-white/10 px-4 py-2 text-sm"
+                disabled={isLoadingDevicePrinters}
+                onClick={() => void loadDevicePrinters()}
+              >
+                {isLoadingDevicePrinters ? "Aniqlanmoqda..." : "Device printerlarni ko'rish"}
+              </TapButton>
+            </div>
+            {printers.length > 0 ? (
+              <div className="mb-8 space-y-2">
+                {printers.map((printer) => (
+                  <div
+                    key={`cashier-${printer.uri || printer.queue}`}
+                    className={`p-3 rounded border ${
+                      cashierPrinterTarget === printer.uri
+                        ? "bg-teal-500/10 border-teal-400"
+                        : "bg-black/30 border-white/10"
+                    }`}
+                  >
+                    <div className="font-semibold">{printer.queue}</div>
+                    <div className="text-xs text-white/70 mb-3">{printer.uri}</div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setCashierPrinterTarget(printer.uri)}
+                        className="px-3 py-1 rounded bg-white/10 text-xs"
+                      >
+                        Tanlash
+                      </button>
+                      <button
+                        onClick={() => void saveCashierPrinterFromDevice(printer.uri)}
+                        className="px-3 py-1 rounded bg-teal-500 text-black text-xs font-semibold"
+                      >
+                        Tanla va saqla
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="mb-4 flex items-center justify-between gap-3 border-t border-white/10 pt-6">
+              <h2 className="text-lg font-semibold text-white">Kassalar</h2>
+              <div className="flex gap-2">
+                <TapButton
+                  type="button"
+                  className="rounded bg-white/10 px-3 py-2 text-sm"
+                  onClick={() =>
+                    setCashiers((prev) => [
+                      ...prev,
+                      { id: "", name: "", login: "", password: "", enabled: true }
+                    ])
+                  }
+                >
+                  + Kassa qo'shish
+                </TapButton>
+                <TapButton
+                  type="button"
+                  className="rounded bg-teal-500 px-3 py-2 text-sm font-semibold text-black"
+                  onClick={() => void saveCashiers()}
+                >
+                  Saqlash
+                </TapButton>
+              </div>
+            </div>
+            <div className="space-y-3">
+              {cashiers.map((row, index) => (
+                <div key={`${row.id || "cashier"}-${index}`} className="rounded-lg border border-white/10 bg-black/25 p-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <input
+                      className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                      placeholder="Kassa ID"
+                      value={row.id || ""}
+                      onChange={(e) => {
+                        const copy = [...cashiers];
+                        copy[index].id = e.target.value;
+                        setCashiers(copy);
+                      }}
+                    />
+                    <input
+                      className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                      placeholder="Ism"
+                      value={row.name || ""}
+                      onChange={(e) => {
+                        const copy = [...cashiers];
+                        copy[index].name = e.target.value;
+                        setCashiers(copy);
+                      }}
+                    />
+                    <input
+                      className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                      placeholder="Login"
+                      value={row.login || ""}
+                      onChange={(e) => {
+                        const copy = [...cashiers];
+                        copy[index].login = e.target.value;
+                        setCashiers(copy);
+                      }}
+                    />
+                    <input
+                      className="bg-black/40 border border-white/10 rounded px-3 py-2"
+                      placeholder="Parol"
+                      value={row.password || ""}
+                      onChange={(e) => {
+                        const copy = [...cashiers];
+                        copy[index].password = e.target.value;
+                        setCashiers(copy);
+                      }}
+                    />
+                    <label className="flex items-center gap-2 text-sm text-white/80">
+                      <input
+                        type="checkbox"
+                        checked={row.enabled !== false}
+                        onChange={(e) => {
+                          const copy = [...cashiers];
+                          copy[index].enabled = e.target.checked;
+                          setCashiers(copy);
+                        }}
+                      />
+                      Aktiv
+                    </label>
+                  </div>
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      type="button"
+                      className="rounded border border-red-500/45 bg-red-500/15 px-4 py-2 text-sm text-red-100"
+                      onClick={() => setCashiers((prev) => prev.filter((_, i) => i !== index))}
+                    >
+                      O'chirish
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+        {activePage === PAGES.cashierOrders ? (
+          <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6">
+            <div className="mb-4 flex flex-wrap items-end gap-3">
+              <label className="block">
+                <span className="mb-1 block text-xs text-white/60">Tasdiqlovchi kassa</span>
+                <select
+                  className="rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white"
+                  value={cashierActorId}
+                  onChange={(e) => setCashierActorId(e.target.value)}
+                >
+                  <option value="">Kassani tanlang</option>
+                  {cashiers
+                    .filter((c) => c.enabled !== false)
+                    .map((c) => (
+                      <option key={c.id || c.login} value={c.id || ""}>
+                        {c.name || c.login || c.id}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label className="block flex-1 min-w-[220px]">
+                <span className="mb-1 block text-xs text-white/60">Bekor qilish sababi</span>
+                <input
+                  className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white"
+                  placeholder="Masalan: bemor qaytdi"
+                  value={pendingCancelReason}
+                  onChange={(e) => setPendingCancelReason(e.target.value)}
+                />
+              </label>
+              <TapButton
+                type="button"
+                className="rounded-lg bg-white/10 px-4 py-2 text-sm"
+                onClick={() => {
+                  void fetchCashierPendingOrders();
+                  void fetchCashierAllOrders();
+                }}
+                disabled={isCashierPendingLoading}
+              >
+                {isCashierPendingLoading ? "Yuklanmoqda..." : "Yangilash"}
+              </TapButton>
+            </div>
+
+            <div className="mb-4 text-sm text-white/70">
+              Kutilayotgan guruhlar: <strong className="text-teal-300">{cashierPendingGroups.length}</strong>
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border border-white/10">
+              <table className="min-w-full border-collapse text-sm">
+                <thead className="bg-white/5 text-white/70">
+                  <tr>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Sana/Vaqt</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Bemor</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Telefon</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Xizmatlar</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Jami</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-right font-semibold">Amal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cashierPendingGroups.length === 0 ? (
+                    <tr>
+                      <td className="px-3 py-4 text-white/55" colSpan={6}>
+                        {isCashierPendingLoading ? "Yuklanmoqda..." : "Kutilayotgan buyurtma yo'q"}
+                      </td>
+                    </tr>
+                  ) : (
+                    cashierPendingGroups.map((group) => (
+                      <tr key={group.key} className="odd:bg-black/20 even:bg-black/10">
+                        <td className="border-b border-white/10 px-3 py-2">
+                          {formatReportDateTime(group.createdAt, cashierReportsData?.timezone)}
+                        </td>
+                        <td className="border-b border-white/10 px-3 py-2">
+                          {[group.patientFirstName, group.patientLastName].filter(Boolean).join(" ") || "—"}
+                        </td>
+                        <td className="border-b border-white/10 px-3 py-2">{group.patientPhone || "—"}</td>
+                        <td className="border-b border-white/10 px-3 py-2">
+                          {group.lineItems.length <= 1 ? (
+                            <span>{group.lineItems[0]?.service || "—"}</span>
+                          ) : (
+                            <details className="group">
+                              <summary className="cursor-pointer text-teal-300 hover:text-teal-200">
+                                {group.lineItems.length} ta xizmat
+                              </summary>
+                              <div className="mt-2 space-y-1 rounded-lg border border-white/10 bg-black/35 p-2">
+                                {group.lineItems.map((item) => (
+                                  <div key={item.ticketId} className="flex items-center justify-between gap-2 text-xs">
+                                    <span className="text-white/85">{item.service}</span>
+                                    <span className="text-white/55">{Number(item.price || 0).toLocaleString("uz-UZ")} so'm</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </details>
+                          )}
+                        </td>
+                        <td className="border-b border-white/10 px-3 py-2 font-semibold text-teal-300">
+                          {Number(group.total || 0).toLocaleString("uz-UZ")} so'm
+                        </td>
+                        <td className="border-b border-white/10 px-3 py-2 text-right">
+                          <div className="flex justify-end gap-2">
+                            <TapButton
+                              type="button"
+                              className="rounded-md bg-teal-500 px-2.5 py-1.5 text-xs font-bold text-black disabled:opacity-50"
+                              disabled={pendingActionKey === group.key}
+                              onClick={() => void confirmCashierPendingGroup(group)}
+                            >
+                              {pendingActionKey === group.key ? "..." : "Tasdiqlash"}
+                            </TapButton>
+                            <TapButton
+                              type="button"
+                              className="rounded-md bg-red-500/20 px-2.5 py-1.5 text-xs font-bold text-red-100 disabled:opacity-50"
+                              disabled={pendingActionKey === group.key}
+                              onClick={() => void cancelCashierPendingGroup(group)}
+                            >
+                              Bekor
+                            </TapButton>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-6">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-white">Bekor qilingan buyurtmalar</h3>
+                <span className="text-xs text-white/50">
+                  {isCashierAllOrdersLoading ? "Yuklanmoqda..." : `${cashierCancelledRows.length} ta`}
+                </span>
+              </div>
+              <div className="overflow-x-auto rounded-xl border border-white/10">
+                <table className="min-w-full border-collapse text-sm">
+                  <thead className="bg-white/5 text-white/70">
+                    <tr>
+                      <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Sana/Vaqt</th>
+                      <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Bemor</th>
+                      <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Kim bekor qildi</th>
+                      <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Izoh</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cashierCancelledRows.length === 0 ? (
+                      <tr>
+                        <td className="px-3 py-3 text-white/55" colSpan={4}>
+                          Bekor qilingan buyurtma yo'q
+                        </td>
+                      </tr>
+                    ) : (
+                      cashierCancelledRows.map((row) => (
+                        <tr key={`cancelled-${row.ticketId}-${row.createdAt}`} className="odd:bg-black/20 even:bg-black/10">
+                          <td className="border-b border-white/10 px-3 py-2">
+                            {formatReportDateTime(row.cashierCancelledAt || row.createdAt, cashierAllOrdersData?.timezone)}
+                          </td>
+                          <td className="border-b border-white/10 px-3 py-2">
+                            {[row.patientFirstName, row.patientLastName].filter(Boolean).join(" ") || "—"}
+                          </td>
+                          <td className="border-b border-white/10 px-3 py-2">
+                            {cashierNameById.get(String(row.cashierId || "").trim()) ||
+                              String(row.cashierId || "").trim() ||
+                              "Noma'lum"}
+                          </td>
+                          <td className="border-b border-white/10 px-3 py-2">{row.cashierCancelReason || "—"}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {activePage === PAGES.cashierReports ? (
+          <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6">
+            <div className="mb-4 rounded-2xl border border-white/10 bg-gradient-to-b from-white/[0.07] to-black/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+              <p className="mb-1 text-xs font-semibold uppercase tracking-[0.14em] text-teal-300/80">Filterlar</p>
+              <p className="mb-4 text-xs text-white/50">Sana, bo'lim va bemor bo'yicha hisobotni aniq kesimda ko'ring.</p>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-12">
+                <label className="block md:col-span-2">
+                  <span className="mb-1.5 block text-xs font-medium text-white/75">Aniq sana</span>
+                  <input
+                    type="date"
+                    className="w-full min-h-[48px] rounded-xl border border-white/15 bg-black/35 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-white/40 focus:border-teal-400/60 focus:ring-2 focus:ring-teal-500/20"
+                    value={cashierReportExactDate}
+                    onChange={(e) => setCashierReportExactDate(e.target.value)}
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="mb-1.5 block text-xs font-medium text-white/75">Boshlanish sanasi</span>
+                  <input
+                    type="date"
+                    className="w-full min-h-[48px] rounded-xl border border-white/15 bg-black/35 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-white/40 focus:border-teal-400/60 focus:ring-2 focus:ring-teal-500/20"
+                    value={cashierReportFromDate}
+                    onChange={(e) => setCashierReportFromDate(e.target.value)}
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="mb-1.5 block text-xs font-medium text-white/75">Tugash sanasi</span>
+                  <input
+                    type="date"
+                    className="w-full min-h-[48px] rounded-xl border border-white/15 bg-black/35 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-white/40 focus:border-teal-400/60 focus:ring-2 focus:ring-teal-500/20"
+                    value={cashierReportToDate}
+                    onChange={(e) => setCashierReportToDate(e.target.value)}
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="mb-1.5 block text-xs font-medium text-white/75">Bo'lim</span>
+                  <select
+                    className="w-full min-h-[48px] rounded-xl border border-white/15 bg-black/35 px-3 py-2.5 text-sm text-white outline-none transition focus:border-teal-400/60 focus:ring-2 focus:ring-teal-500/20"
+                    value={cashierReportSection}
+                    onChange={(e) => setCashierReportSection(e.target.value)}
+                  >
+                    <option value="">Barcha bo'limlar</option>
+                    {cashierReportSections.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block md:col-span-4">
+                  <span className="mb-1.5 block text-xs font-medium text-white/75">Bemor qidiruvi (ism/familiya)</span>
+                  <input
+                    className="w-full min-h-[48px] rounded-xl border border-white/15 bg-black/35 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-white/40 focus:border-teal-400/60 focus:ring-2 focus:ring-teal-500/20"
+                    placeholder="Masalan: Ali Valiyev"
+                    value={cashierReportPatientQuery}
+                    onChange={(e) => setCashierReportPatientQuery(e.target.value)}
+                  />
+                </label>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <TapButton
+                  type="button"
+                  className="rounded-xl bg-teal-500 px-5 py-2.5 text-sm font-semibold text-black shadow-sm shadow-teal-900/30"
+                  onClick={cashierFilterApplied ? resetCashierReportFilters : applyCashierReportFilters}
+                >
+                  {cashierFilterApplied ? "Tozalash" : "Filterlash"}
+                </TapButton>
+                <TapButton
+                  type="button"
+                  className="rounded-xl border border-white/15 bg-white/10 px-5 py-2.5 text-sm text-white/90"
+                  onClick={() => void fetchCashierReportsLog()}
+                  disabled={isCashierReportsLoading}
+                >
+                  Yangilash
+                </TapButton>
+              </div>
+            </div>
+            <div className="mb-4 flex items-center justify-between gap-2">
+              <div className="text-sm text-white/70">
+                Natija: <strong className="text-teal-300">{cashierReportGroupedRows.length}</strong>
+                <span className="ml-2 text-white/45">(xizmatlar: {cashierReportRows.length})</span>
+              </div>
+              <div className="text-xs text-white/45">Filtrlangan ma'lumotlar asosida ko'rsatildi</div>
+            </div>
+
+            <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-4">
+              <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                <p className="text-[11px] uppercase tracking-wide text-white/45">Jami tushum</p>
+                <p className="mt-1 text-2xl font-extrabold text-teal-300">
+                  {Number(cashierReportDashboard.totalRevenue || 0).toLocaleString("uz-UZ")} so'm
+                </p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                <p className="text-[11px] uppercase tracking-wide text-white/45">Cheklar soni</p>
+                <p className="mt-1 text-2xl font-extrabold text-white">
+                  {Number(cashierReportDashboard.totalChecks || 0).toLocaleString("uz-UZ")}
+                </p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                <p className="text-[11px] uppercase tracking-wide text-white/45">O'rtacha chek</p>
+                <p className="mt-1 text-2xl font-extrabold text-teal-300">
+                  {Number(cashierReportDashboard.avgCheck || 0).toLocaleString("uz-UZ")} so'm
+                </p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                <p className="text-[11px] uppercase tracking-wide text-white/45">Faol bo'limlar</p>
+                <p className="mt-1 text-2xl font-extrabold text-white">
+                  {Number(cashierReportDashboard.topDepartments.length || 0)}
+                </p>
+              </div>
+            </div>
+
+            <div className="mb-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                <h3 className="text-sm font-bold text-white mb-3">Bo'limlar bo'yicha tushum</h3>
+                <div className="space-y-2">
+                  {cashierReportDashboard.topDepartments.length === 0 ? (
+                    <p className="text-sm text-white/45">Ma'lumot yo'q</p>
+                  ) : (
+                    cashierReportDashboard.topDepartments.map((row) => {
+                      const pct = cashierReportDashboard.maxDepartmentRevenue > 0
+                        ? Math.max(4, Math.round((Number(row.revenue || 0) / cashierReportDashboard.maxDepartmentRevenue) * 100))
+                        : 0;
+                      return (
+                        <div key={row.label} className="rounded-lg border border-white/10 bg-black/25 p-2.5">
+                          <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                            <span className="font-semibold text-white/85">{row.label}</span>
+                            <span className="font-bold text-teal-300">{Number(row.revenue || 0).toLocaleString("uz-UZ")} so'm</span>
+                          </div>
+                          <div className="h-2 rounded bg-white/10 overflow-hidden">
+                            <div className="h-full rounded bg-teal-400" style={{ width: `${pct}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                <h3 className="text-sm font-bold text-white mb-3">Xizmatlar TOP (tushum)</h3>
+                <div className="space-y-2">
+                  {cashierReportDashboard.topServices.length === 0 ? (
+                    <p className="text-sm text-white/45">Ma'lumot yo'q</p>
+                  ) : (
+                    cashierReportDashboard.topServices.map((row) => {
+                      const pct = cashierReportDashboard.maxServiceRevenue > 0
+                        ? Math.max(4, Math.round((Number(row.revenue || 0) / cashierReportDashboard.maxServiceRevenue) * 100))
+                        : 0;
+                      return (
+                        <div key={row.label} className="rounded-lg border border-white/10 bg-black/25 p-2.5">
+                          <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                            <span className="font-semibold text-white/85">{row.label}</span>
+                            <span className="font-bold text-teal-300">{Number(row.revenue || 0).toLocaleString("uz-UZ")} so'm</span>
+                          </div>
+                          <div className="h-2 rounded bg-white/10 overflow-hidden">
+                            <div className="h-full rounded bg-teal-400" style={{ width: `${pct}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-4 rounded-xl border border-white/10 bg-black/20 p-4">
+              <div className="mb-3 flex flex-wrap items-end gap-2">
+                <div className="mr-auto">
+                  <h3 className="text-sm font-bold text-white">Kunlik trend</h3>
+                  <p className="text-xs text-white/50">Aniq kun yoki sana oralig'i bo'yicha tushumni ko'rish</p>
+                </div>
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-medium text-white/65">Aniq sana</span>
+                  <input
+                    type="date"
+                    className="min-h-[40px] rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs text-white outline-none focus:border-teal-400/60"
+                    value={cashierTrendExactDate}
+                    onChange={(e) => setCashierTrendExactDate(e.target.value)}
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-medium text-white/65">Dan</span>
+                  <input
+                    type="date"
+                    className="min-h-[40px] rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs text-white outline-none focus:border-teal-400/60"
+                    value={cashierTrendFromDate}
+                    onChange={(e) => setCashierTrendFromDate(e.target.value)}
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-medium text-white/65">Gacha</span>
+                  <input
+                    type="date"
+                    className="min-h-[40px] rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-xs text-white outline-none focus:border-teal-400/60"
+                    value={cashierTrendToDate}
+                    onChange={(e) => setCashierTrendToDate(e.target.value)}
+                  />
+                </label>
+                <TapButton
+                  type="button"
+                  className="min-h-[40px] rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-xs text-white/90"
+                  onClick={() => {
+                    setCashierTrendExactDate("");
+                    setCashierTrendFromDate("");
+                    setCashierTrendToDate("");
+                  }}
+                >
+                  Tozalash
+                </TapButton>
+              </div>
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-7">
+                {cashierTrendItems.length === 0 ? (
+                  <p className="text-sm text-white/45">Ma'lumot yo'q</p>
+                ) : (
+                  cashierTrendItems.map((day) => (
+                    <div key={day.day} className="rounded-lg border border-white/10 bg-black/25 p-2.5">
+                      <p className="m-0 text-xs text-white/60">{day.day.slice(5)}</p>
+                      <div className="mt-2 h-20 rounded bg-white/5 p-1.5">
+                        <div
+                          className="h-full w-full rounded bg-teal-400/20 flex items-end"
+                        >
+                          <div
+                            className="w-full rounded bg-teal-400"
+                            style={{
+                              height: `${
+                                cashierTrendMaxRevenue > 0
+                                  ? Math.max(8, Math.round((Number(day.totalRevenue || 0) / cashierTrendMaxRevenue) * 100))
+                                  : 0
+                              }%`
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <p className="m-0 mt-2 text-sm font-bold text-teal-300">
+                        {Number(day.totalRevenue || 0).toLocaleString("uz-UZ")} so'm
+                      </p>
+                      <p className="m-0 text-[11px] text-white/45">{day.count} ta chek</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+            <div className="overflow-x-auto rounded-xl border border-white/10">
+              <table className="min-w-full border-collapse text-sm">
+                <thead className="bg-white/5 text-white/70">
+                  <tr>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Sana/Vaqt</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Bemor</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Telefon</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Bo'lim</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold whitespace-nowrap">
+                      To&apos;lov turi
+                    </th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Xizmatlar</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Narx</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-right font-semibold">Amal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cashierReportGroupedRows.length === 0 ? (
+                    <tr>
+                      <td className="px-3 py-3 text-white/55" colSpan={8}>
+                        {isCashierReportsLoading ? "Yuklanmoqda..." : "Filter bo'yicha ma'lumot yo'q"}
+                      </td>
+                    </tr>
+                  ) : (
+                    cashierReportGroupedRows.map((group, idx) => (
+                      <tr key={`${group.groupKey}-${idx}`} className="odd:bg-black/20 even:bg-black/10">
+                        <td className="border-b border-white/10 px-3 py-2">{formatReportDateTime(group.createdAt, cashierReportsData?.timezone)}</td>
+                        <td className="border-b border-white/10 px-3 py-2">
+                          {group.patientName}
+                        </td>
+                        <td className="border-b border-white/10 px-3 py-2">{group.patientPhone}</td>
+                        <td className="border-b border-white/10 px-3 py-2">{group.departmentsLabel || "—"}</td>
+                        <td className="border-b border-white/10 px-3 py-2 whitespace-nowrap">
+                          {group.paymentMethodLabel}
+                        </td>
+                        <td className="border-b border-white/10 px-3 py-2">
+                          {group.services.length <= 1 ? (
+                            <span>{group.services[0]?.service || "—"}</span>
+                          ) : (
+                            <details className="group">
+                              <summary className="cursor-pointer text-teal-300 hover:text-teal-200">
+                                {group.services.length} ta xizmat
+                              </summary>
+                              <div className="mt-2 space-y-1 rounded-lg border border-white/10 bg-black/35 p-2">
+                                {group.services.map((svc) => (
+                                  <div key={svc.ticketId || `${svc.service}-${svc.department}`} className="flex items-center justify-between gap-2 text-xs">
+                                    <span className="text-white/85">{svc.service}</span>
+                                    <span className="text-white/55">{Number(svc.price || 0).toLocaleString("uz-UZ")} so'm</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </details>
+                          )}
+                        </td>
+                        <td className="border-b border-white/10 px-3 py-2 text-teal-300 font-semibold">
+                          {Number(group.totalPrice || 0).toLocaleString("uz-UZ")} so'm
+                        </td>
+                        <td className="border-b border-white/10 px-3 py-2 text-right">
+                          <TapButton
+                            type="button"
+                            className="rounded-lg border border-teal-400/35 bg-teal-500/15 px-3 py-1.5 text-xs font-semibold text-teal-200 hover:bg-teal-500/25"
+                            onClick={() => void reprintCashierReceipt(group)}
+                            disabled={printingOrderTicketId === (group.services?.[0]?.ticketId || "")}
+                          >
+                            {printingOrderTicketId === (group.services?.[0]?.ticketId || "") ? "..." : "Qayta chek"}
+                          </TapButton>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
         ) : null}
       </main>
     </div>
