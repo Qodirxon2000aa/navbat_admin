@@ -198,6 +198,8 @@ const PAGES = {
   cashier: "cashier",
   cashierOrders: "cashierOrders",
   cashierReports: "cashierReports",
+  cashierConfirmed: "cashierConfirmed",
+  cashierPatients: "cashierPatients",
   printer: "printer",
   reports: "reports",
   orders: "orders",
@@ -301,6 +303,7 @@ export default function App() {
   const [printerPort, setPrinterPort] = useState(9100);
   const [cashierPrinterTarget, setCashierPrinterTarget] = useState("");
   const [cashierPrinterPort, setCashierPrinterPort] = useState(9100);
+  const [cashierPrinterLanMode, setCashierPrinterLanMode] = useState(false);
   const [printers, setPrinters] = useState([]);
   const [selectedPrinterUri, setSelectedPrinterUri] = useState("");
   const [message, setMessage] = useState("");
@@ -329,15 +332,22 @@ export default function App() {
   const [cashierReportToDate, setCashierReportToDate] = useState("");
   const [cashierReportSection, setCashierReportSection] = useState("");
   const [cashierReportPatientQuery, setCashierReportPatientQuery] = useState("");
+  const [cashierReportPaymentMethod, setCashierReportPaymentMethod] = useState("");
   const [cashierAppliedExactDate, setCashierAppliedExactDate] = useState("");
   const [cashierAppliedFromDate, setCashierAppliedFromDate] = useState("");
   const [cashierAppliedToDate, setCashierAppliedToDate] = useState("");
   const [cashierAppliedSection, setCashierAppliedSection] = useState("");
   const [cashierAppliedPatientQuery, setCashierAppliedPatientQuery] = useState("");
+  const [cashierAppliedPaymentMethod, setCashierAppliedPaymentMethod] = useState("");
   const [cashierFilterApplied, setCashierFilterApplied] = useState(false);
   const [cashierTrendExactDate, setCashierTrendExactDate] = useState("");
   const [cashierTrendFromDate, setCashierTrendFromDate] = useState("");
   const [cashierTrendToDate, setCashierTrendToDate] = useState("");
+  const [cashierPatientsData, setCashierPatientsData] = useState(null);
+  const [isCashierPatientsLoading, setIsCashierPatientsLoading] = useState(false);
+  const [cashierPatientsLimit] = useState(20000);
+  const [cashierPatientsQuery, setCashierPatientsQuery] = useState("");
+  const [expandedCashierPatients, setExpandedCashierPatients] = useState({});
   const [isRegistrationPatientsModalOpen, setIsRegistrationPatientsModalOpen] = useState(false);
   const [registrationPatientsData, setRegistrationPatientsData] = useState(null);
   const [isRegistrationPatientsLoading, setIsRegistrationPatientsLoading] = useState(false);
@@ -447,8 +457,13 @@ export default function App() {
     setRegistrationServices(data.registrationServices || []);
     setPrinterTarget(data.printerTarget || "");
     setPrinterPort(data.printerPort || 9100);
-    setCashierPrinterTarget(data.cashierPrinterTarget || "");
+    const cashierTarget = String(data.cashierPrinterTarget || "").trim();
+    setCashierPrinterTarget(cashierTarget);
     setCashierPrinterPort(Number(data.cashierPrinterPort) || 9100);
+    const lanLike =
+      /^(\d{1,3}\.){3}\d{1,3}$/.test(cashierTarget) ||
+      cashierTarget.toLowerCase().startsWith("tcp://");
+    setCashierPrinterLanMode(lanLike);
     lastSavedRegistrationServicesRef.current = JSON.stringify(data.registrationServices || []);
     isHydratingRef.current = false;
   };
@@ -564,6 +579,27 @@ export default function App() {
   }, []);
   const fetchCashierAllOrdersRef = useRef(fetchCashierAllOrders);
   fetchCashierAllOrdersRef.current = fetchCashierAllOrders;
+  const fetchCashierPatients = useCallback(async () => {
+    setIsCashierPatientsLoading(true);
+    try {
+      const response = await fetch(
+        `${PUBLIC_API_URL}/cashier/patients?status=confirmed&limit=${encodeURIComponent(cashierPatientsLimit)}`,
+        { cache: "no-store" }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(data.message || "Kassa bemorlarini olishda xatolik");
+        return;
+      }
+      setCashierPatientsData(data);
+    } catch (_error) {
+      window.alert("Kassa bemorlari: server bilan aloqa xatoligi");
+    } finally {
+      setIsCashierPatientsLoading(false);
+    }
+  }, [cashierPatientsLimit]);
+  const fetchCashierPatientsRef = useRef(fetchCashierPatients);
+  fetchCashierPatientsRef.current = fetchCashierPatients;
 
   const fetchRegistrationPatients = useCallback(async () => {
     setIsRegistrationPatientsLoading(true);
@@ -599,6 +635,20 @@ export default function App() {
       return fullName.includes(q);
     });
   }, [registrationPatientsData, registrationPatientsQuery]);
+  const filteredCashierPatients = useMemo(() => {
+    const list = Array.isArray(cashierPatientsData?.patients) ? cashierPatientsData.patients : [];
+    const q = String(cashierPatientsQuery || "")
+      .trim()
+      .toLowerCase();
+    if (!q) return list;
+    return list.filter((patient) => {
+      const fullName = [patient?.patientFirstName, patient?.patientLastName]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return fullName.includes(q);
+    });
+  }, [cashierPatientsData, cashierPatientsQuery]);
   const reportDashboard = useMemo(() => {
     const rows = Array.isArray(reportData?.rows) ? reportData.rows : [];
     const ticketLog = Array.isArray(reportData?.ticketLog) ? reportData.ticketLog : [];
@@ -683,6 +733,7 @@ export default function App() {
     setCashierAppliedToDate(to);
     setCashierAppliedSection(String(cashierReportSection || "").trim());
     setCashierAppliedPatientQuery(String(cashierReportPatientQuery || "").trim());
+    setCashierAppliedPaymentMethod(String(cashierReportPaymentMethod || "").trim().toLowerCase());
     setCashierFilterApplied(true);
   };
   const resetCashierReportFilters = () => {
@@ -691,11 +742,13 @@ export default function App() {
     setCashierReportToDate("");
     setCashierReportSection("");
     setCashierReportPatientQuery("");
+    setCashierReportPaymentMethod("");
     setCashierAppliedExactDate("");
     setCashierAppliedFromDate("");
     setCashierAppliedToDate("");
     setCashierAppliedSection("");
     setCashierAppliedPatientQuery("");
+    setCashierAppliedPaymentMethod("");
     setCashierFilterApplied(false);
   };
   const cashierReportRows = useMemo(() => {
@@ -704,7 +757,8 @@ export default function App() {
     const to = String(cashierAppliedToDate || "");
     const exact = String(cashierAppliedExactDate || "");
     const section = String(cashierAppliedSection || "");
-    const q = String(cashierAppliedPatientQuery || "").toLowerCase();
+    const q = String(cashierReportPatientQuery || "").toLowerCase();
+    const payment = String(cashierAppliedPaymentMethod || "").toLowerCase();
     return rows.filter((row) => {
       const day = String(row?.createdAt || "").slice(0, 10);
       if (exact) {
@@ -718,6 +772,12 @@ export default function App() {
         const full = `${String(row?.patientFirstName || "")} ${String(row?.patientLastName || "")}`.toLowerCase();
         if (!full.includes(q)) return false;
       }
+      if (payment) {
+        const rowPayment = String(row?.paymentMethod || "")
+          .trim()
+          .toLowerCase();
+        if (rowPayment !== payment) return false;
+      }
       return true;
     });
   }, [
@@ -726,7 +786,8 @@ export default function App() {
     cashierAppliedToDate,
     cashierAppliedExactDate,
     cashierAppliedSection,
-    cashierAppliedPatientQuery
+    cashierReportPatientQuery,
+    cashierAppliedPaymentMethod
   ]);
   const cashierPendingGroups = useMemo(() => {
     const groups = new Map();
@@ -971,7 +1032,7 @@ export default function App() {
     return undefined;
   }, [activePage, registrationOrdersLimit, fetchRegistrationOrdersLog]);
   useEffect(() => {
-    if (activePage !== PAGES.cashierReports) return undefined;
+    if (activePage !== PAGES.cashierReports && activePage !== PAGES.cashierConfirmed) return undefined;
     void fetchCashierReportsLog();
     return undefined;
   }, [activePage, cashierReportsLimit, fetchCashierReportsLog]);
@@ -981,6 +1042,11 @@ export default function App() {
     void fetchCashierAllOrders();
     return undefined;
   }, [activePage, fetchCashierPendingOrders, fetchCashierAllOrders]);
+  useEffect(() => {
+    if (activePage !== PAGES.cashierPatients) return undefined;
+    void fetchCashierPatients();
+    return undefined;
+  }, [activePage, fetchCashierPatients]);
 
   useEffect(() => {
     const events = new EventSource(`${PUBLIC_API_URL}/events`);
@@ -1001,10 +1067,16 @@ export default function App() {
       if (activePage === PAGES.cashierReports) {
         void fetchCashierReportsLogRef.current();
       }
+      if (activePage === PAGES.cashierConfirmed) {
+        void fetchCashierReportsLogRef.current();
+      }
       if (activePage === PAGES.cashierOrders) {
         void fetchCashierPendingOrdersRef.current();
         void fetchCashierAllOrdersRef.current();
         void fetchCashierReportsLogRef.current();
+      }
+      if (activePage === PAGES.cashierPatients) {
+        void fetchCashierPatientsRef.current();
       }
     };
 
@@ -1275,6 +1347,17 @@ export default function App() {
 
   const saveCashierPrinter = async () => {
     try {
+      if (cashierPrinterLanMode) {
+        const raw = String(cashierPrinterTarget || "").trim();
+        const okIp = /^(\d{1,3}\.){3}\d{1,3}$/.test(raw);
+        const okTcp = raw.toLowerCase().startsWith("tcp://");
+        if (!okIp && !okTcp) {
+          window.alert(
+            "LAN uchun IP kiriting (masalan 192.168.1.15) yoki tcp://192.168.1.15:9100"
+          );
+          return;
+        }
+      }
       const response = await fetch(`${API_URL}/cashier-printer`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -1288,8 +1371,13 @@ export default function App() {
         window.alert(data.message || "Kassa printerini saqlashda xatolik");
         return;
       }
-      setCashierPrinterTarget(data.cashierPrinterTarget || "");
+      const savedTarget = String(data.cashierPrinterTarget || "").trim();
+      setCashierPrinterTarget(savedTarget);
       setCashierPrinterPort(Number(data.cashierPrinterPort) || 9100);
+      setCashierPrinterLanMode(
+        /^(\d{1,3}\.){3}\d{1,3}$/.test(savedTarget) ||
+          savedTarget.toLowerCase().startsWith("tcp://")
+      );
       window.alert("Kassa printeri saqlandi. Tasdiqlangan cheklar shu manzilga chiqadi.");
     } catch (_e) {
       window.alert("Server bilan aloqa yo'q");
@@ -1311,8 +1399,13 @@ export default function App() {
         window.alert(data.message || "Kassa printerini saqlashda xatolik");
         return;
       }
-      setCashierPrinterTarget(data.cashierPrinterTarget || uri);
+      const savedTarget = String(data.cashierPrinterTarget || uri || "").trim();
+      setCashierPrinterTarget(savedTarget);
       setCashierPrinterPort(Number(data.cashierPrinterPort) || 9100);
+      setCashierPrinterLanMode(
+        /^(\d{1,3}\.){3}\d{1,3}$/.test(savedTarget) ||
+          savedTarget.toLowerCase().startsWith("tcp://")
+      );
       window.alert("Kassa printeri tanlandi va saqlandi.");
     } catch (_e) {
       window.alert("Server bilan aloqa yo'q");
@@ -1815,7 +1908,11 @@ export default function App() {
     activePage === PAGES.registrationServices ||
     activePage === PAGES.registrationOrders;
   const isCashierGroupActive =
-    activePage === PAGES.cashier || activePage === PAGES.cashierOrders || activePage === PAGES.cashierReports;
+    activePage === PAGES.cashier ||
+    activePage === PAGES.cashierOrders ||
+    activePage === PAGES.cashierReports ||
+    activePage === PAGES.cashierConfirmed ||
+    activePage === PAGES.cashierPatients;
   const isKorikGroupActive =
     activePage === PAGES.control ||
     activePage === PAGES.orders ||
@@ -1944,7 +2041,9 @@ export default function App() {
                 >
                   {cashierChildBtn(PAGES.cashier, "Sozlamalar")}
                   {cashierChildBtn(PAGES.cashierOrders, "Buyurtmalar")}
+                  {cashierChildBtn(PAGES.cashierConfirmed, "Tasdiqlanganlar")}
                   {cashierChildBtn(PAGES.cashierReports, "Hisobotlar")}
+                  {cashierChildBtn(PAGES.cashierPatients, "Bemorlar")}
                 </motion.div>
               ) : null}
             </AnimatePresence>
@@ -2014,6 +2113,10 @@ export default function App() {
                 ? "Kassa buyurtmalari"
               : activePage === PAGES.cashierReports
                 ? "Kassa hisobotlari"
+              : activePage === PAGES.cashierConfirmed
+                ? "Kassa tasdiqlanganlar"
+              : activePage === PAGES.cashierPatients
+                ? "Kassa bemorlari"
               : activePage === PAGES.printer
                 ? "Printer"
               : activePage === PAGES.reports
@@ -2043,6 +2146,8 @@ export default function App() {
                 ? "Kassaga tushgan kutilayotgan buyurtmalar. Admin ham tasdiqlash/bekor qilishni real-time boshqara oladi."
               : activePage === PAGES.cashierReports
                 ? "Kassadagi hisobotlar bilan bir xil filterlar: sana, bo'lim, bemor qidiruvi. Natija td/tr jadvalda."
+              : activePage === PAGES.cashierConfirmed
+                ? "Kassada tasdiqlangan xizmatlar ro'yxati. Filterlar bilan sana, bo'lim, bemor va to'lov turida kesib ko'ring."
               : activePage === PAGES.printer
                 ? "Umumiy printer sozlamasi va device printerlarni tanlash."
               : activePage === PAGES.reports
@@ -2663,6 +2768,9 @@ export default function App() {
                         <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Bo&apos;lim</th>
                         <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Shifokor</th>
                         <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Xizmat</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
+                          To&apos;lov turi
+                        </th>
                         <th className="border-b border-white/10 px-3 py-3 text-right font-semibold">Narx</th>
                       </tr>
                     </thead>
@@ -2670,7 +2778,7 @@ export default function App() {
                       {(reportData.ticketLog || []).length === 0 ? (
                         <tr>
                           <td
-                            colSpan={6}
+                            colSpan={7}
                             className="border-b border-white/10 px-4 py-6 text-center text-white/45"
                           >
                             Bu sanalar oralig&apos;ida chek topilmadi.
@@ -2690,6 +2798,9 @@ export default function App() {
                               {formatDoctorFromRow(row)}
                             </td>
                             <td className="border-b border-white/10 px-3 py-2.5 text-white/80">{row.service || "—"}</td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white/90 whitespace-nowrap">
+                              {formatPaymentMethodLabel(row.paymentMethod)}
+                            </td>
                             <td className="border-b border-white/10 px-3 py-2.5 text-right text-white/90 whitespace-nowrap">
                               {Number(row.price || 0).toLocaleString("uz-UZ")} so&apos;m
                             </td>
@@ -2766,6 +2877,9 @@ export default function App() {
                         <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Bo&apos;lim</th>
                         <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Shifokor</th>
                         <th className="border-b border-white/10 px-3 py-3 text-left font-semibold">Xizmat</th>
+                        <th className="border-b border-white/10 px-3 py-3 text-left font-semibold whitespace-nowrap">
+                          To&apos;lov turi
+                        </th>
                         <th className="border-b border-white/10 px-3 py-3 text-right font-semibold">Narx</th>
                         <th className="border-b border-white/10 px-3 py-3 text-center font-semibold whitespace-nowrap">
                           Chek
@@ -2776,7 +2890,7 @@ export default function App() {
                       {(ordersLogData.rows || []).length === 0 ? (
                         <tr>
                           <td
-                            colSpan={7}
+                            colSpan={8}
                             className="border-b border-white/10 px-4 py-8 text-center text-white/45"
                           >
                             Hozircha berilgan chek yo&apos;q.
@@ -2799,6 +2913,9 @@ export default function App() {
                               {formatDoctorFromRow(row)}
                             </td>
                             <td className="border-b border-white/10 px-3 py-2.5 text-white/80">{row.service || "—"}</td>
+                            <td className="border-b border-white/10 px-3 py-2.5 text-white/90 whitespace-nowrap">
+                              {formatPaymentMethodLabel(row.paymentMethod)}
+                            </td>
                             <td className="border-b border-white/10 px-3 py-2.5 text-right text-white/90 whitespace-nowrap">
                               {Number(row.price || 0).toLocaleString("uz-UZ")} so&apos;m
                             </td>
@@ -3690,29 +3807,65 @@ export default function App() {
           <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6">
             <h2 className="text-lg font-semibold text-white mb-2">Kassa printeri</h2>
             <p className="text-sm text-white/65 mb-4">
-              Kassa orqali &quot;Tasdiqlash va chek chiqarish&quot; bosilganda chek aynan shu manzilga yuboriladi
-              (masalan <span className="text-white/90">windows://Printer nomi</span>). Bo&apos;sh qoldirsangiz, umumiy
-              Printer sahifasidagi sozlama ishlatiladi.
+              {cashierPrinterLanMode ? (
+                <>
+                  LAN printer: IP va port orqali to&apos;g&apos;ridan-to&apos;g&apos;ri chek yuboriladi (odatda port{" "}
+                  <span className="text-white/90">9100</span>). Boshqa tarmoqdagi printer uchun IP ni almashtiring va
+                  saqlang.
+                </>
+              ) : (
+                <>
+                  Windows printer: kassa cheki tanlangan printer navbatiga RAW yuboriladi (
+                  <span className="text-white/90">windows://...</span>). Bo&apos;sh qoldirsangiz, umumiy Printer
+                  sahifasidagi sozlama ishlatiladi.
+                </>
+              )}
             </p>
+            <label className="mb-4 flex cursor-pointer items-start gap-3 rounded-lg border border-white/10 bg-black/25 px-3 py-2.5">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={cashierPrinterLanMode}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  setCashierPrinterLanMode(on);
+                  if (on) {
+                    const cur = String(cashierPrinterTarget || "").trim();
+                    if (cur.toLowerCase().startsWith("windows://")) {
+                      setCashierPrinterTarget("");
+                    }
+                  }
+                }}
+              />
+              <span className="text-sm text-white/85">
+                <span className="font-semibold text-white">IP orqali</span> — tarmoq printeri (har xil IP larni kiriting
+                va saqlang)
+              </span>
+            </label>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-              <div>
-                <label className="block text-xs text-white/60 mb-1">Printer manzili</label>
+              <div className={cashierPrinterLanMode ? "md:col-span-1" : "md:col-span-2"}>
+                <label className="block text-xs text-white/60 mb-1">
+                  {cashierPrinterLanMode ? "Printer IP manzili" : "Printer manzili (Windows)"}
+                </label>
                 <input
                   className="w-full bg-black/40 border border-white/10 rounded px-3 py-2"
-                  placeholder="windows://..."
+                  placeholder={cashierPrinterLanMode ? "192.168.1.15" : "windows://Printer nomi"}
                   value={cashierPrinterTarget}
                   onChange={(e) => setCashierPrinterTarget(e.target.value)}
                 />
               </div>
-              <div>
-                <label className="block text-xs text-white/60 mb-1">Port</label>
-                <input
-                  type="number"
-                  className="w-full bg-black/40 border border-white/10 rounded px-3 py-2"
-                  value={cashierPrinterPort}
-                  onChange={(e) => setCashierPrinterPort(Number(e.target.value) || 9100)}
-                />
-              </div>
+              {cashierPrinterLanMode ? (
+                <div>
+                  <label className="block text-xs text-white/60 mb-1">Port (LAN)</label>
+                  <input
+                    type="number"
+                    className="w-full bg-black/40 border border-white/10 rounded px-3 py-2"
+                    placeholder="9100"
+                    value={cashierPrinterPort}
+                    onChange={(e) => setCashierPrinterPort(Number(e.target.value) || 9100)}
+                  />
+                </div>
+              ) : null}
             </div>
             <TapButton
               type="button"
@@ -3721,17 +3874,19 @@ export default function App() {
             >
               Kassa printerini saqlash
             </TapButton>
-            <div className="mb-3">
-              <TapButton
-                type="button"
-                className="rounded bg-white/10 px-4 py-2 text-sm"
-                disabled={isLoadingDevicePrinters}
-                onClick={() => void loadDevicePrinters()}
-              >
-                {isLoadingDevicePrinters ? "Aniqlanmoqda..." : "Device printerlarni ko'rish"}
-              </TapButton>
-            </div>
-            {printers.length > 0 ? (
+            {!cashierPrinterLanMode ? (
+              <>
+                <div className="mb-3">
+                  <TapButton
+                    type="button"
+                    className="rounded bg-white/10 px-4 py-2 text-sm"
+                    disabled={isLoadingDevicePrinters}
+                    onClick={() => void loadDevicePrinters()}
+                  >
+                    {isLoadingDevicePrinters ? "Aniqlanmoqda..." : "Device printerlarni ko'rish"}
+                  </TapButton>
+                </div>
+                {printers.length > 0 ? (
               <div className="mb-8 space-y-2">
                 {printers.map((printer) => (
                   <div
@@ -3761,6 +3916,8 @@ export default function App() {
                   </div>
                 ))}
               </div>
+            ) : null}
+              </>
             ) : null}
 
             <div className="mb-4 flex items-center justify-between gap-3 border-t border-white/10 pt-6">
@@ -4077,14 +4234,17 @@ export default function App() {
                     ))}
                   </select>
                 </label>
-                <label className="block md:col-span-4">
-                  <span className="mb-1.5 block text-xs font-medium text-white/75">Bemor qidiruvi (ism/familiya)</span>
-                  <input
-                    className="w-full min-h-[48px] rounded-xl border border-white/15 bg-black/35 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-white/40 focus:border-teal-400/60 focus:ring-2 focus:ring-teal-500/20"
-                    placeholder="Masalan: Ali Valiyev"
-                    value={cashierReportPatientQuery}
-                    onChange={(e) => setCashierReportPatientQuery(e.target.value)}
-                  />
+                <label className="block md:col-span-2">
+                  <span className="mb-1.5 block text-xs font-medium text-white/75">To'lov turi</span>
+                  <select
+                    className="w-full min-h-[48px] rounded-xl border border-white/15 bg-black/35 px-3 py-2.5 text-sm text-white outline-none transition focus:border-teal-400/60 focus:ring-2 focus:ring-teal-500/20"
+                    value={cashierReportPaymentMethod}
+                    onChange={(e) => setCashierReportPaymentMethod(e.target.value)}
+                  >
+                    <option value="">Barchasi</option>
+                    <option value="cash">Naqd pul</option>
+                    <option value="card">Karta</option>
+                  </select>
                 </label>
               </div>
               <div className="mt-4 flex flex-wrap gap-2">
@@ -4104,6 +4264,17 @@ export default function App() {
                   Yangilash
                 </TapButton>
               </div>
+              <label className="mt-3 block">
+                <span className="mb-1.5 block text-xs font-medium text-white/75">
+                  Bemor qidiruvi (ism/familiya) — avtomatik
+                </span>
+                <input
+                  className="w-full min-h-[48px] rounded-xl border border-white/15 bg-black/35 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-white/40 focus:border-teal-400/60 focus:ring-2 focus:ring-teal-500/20"
+                  placeholder="Masalan: Ali Valiyev"
+                  value={cashierReportPatientQuery}
+                  onChange={(e) => setCashierReportPatientQuery(e.target.value)}
+                />
+              </label>
             </div>
             <div className="mb-4 flex items-center justify-between gap-2">
               <div className="text-sm text-white/70">
@@ -4343,6 +4514,247 @@ export default function App() {
                   )}
                 </tbody>
               </table>
+            </div>
+          </section>
+        ) : null}
+        {activePage === PAGES.cashierConfirmed ? (
+          <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6">
+            <div className="mb-4 rounded-2xl border border-white/10 bg-gradient-to-b from-white/[0.07] to-black/30 p-4">
+              <p className="mb-1 text-xs font-semibold uppercase tracking-[0.14em] text-teal-300/80">Filterlar</p>
+              <p className="mb-4 text-xs text-white/50">Tasdiqlangan xizmatlarni aniq filter bilan ko'ring.</p>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-12">
+                <label className="block md:col-span-2">
+                  <span className="mb-1.5 block text-xs font-medium text-white/75">Aniq sana</span>
+                  <input
+                    type="date"
+                    className="w-full min-h-[48px] rounded-xl border border-white/15 bg-black/35 px-3 py-2.5 text-sm text-white outline-none"
+                    value={cashierReportExactDate}
+                    onChange={(e) => setCashierReportExactDate(e.target.value)}
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="mb-1.5 block text-xs font-medium text-white/75">Boshlanish</span>
+                  <input
+                    type="date"
+                    className="w-full min-h-[48px] rounded-xl border border-white/15 bg-black/35 px-3 py-2.5 text-sm text-white outline-none"
+                    value={cashierReportFromDate}
+                    onChange={(e) => setCashierReportFromDate(e.target.value)}
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="mb-1.5 block text-xs font-medium text-white/75">Tugash</span>
+                  <input
+                    type="date"
+                    className="w-full min-h-[48px] rounded-xl border border-white/15 bg-black/35 px-3 py-2.5 text-sm text-white outline-none"
+                    value={cashierReportToDate}
+                    onChange={(e) => setCashierReportToDate(e.target.value)}
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="mb-1.5 block text-xs font-medium text-white/75">Bo'lim</span>
+                  <select
+                    className="w-full min-h-[48px] rounded-xl border border-white/15 bg-black/35 px-3 py-2.5 text-sm text-white outline-none"
+                    value={cashierReportSection}
+                    onChange={(e) => setCashierReportSection(e.target.value)}
+                  >
+                    <option value="">Barcha bo'limlar</option>
+                    {cashierReportSections.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="mb-1.5 block text-xs font-medium text-white/75">To'lov turi</span>
+                  <select
+                    className="w-full min-h-[48px] rounded-xl border border-white/15 bg-black/35 px-3 py-2.5 text-sm text-white outline-none"
+                    value={cashierReportPaymentMethod}
+                    onChange={(e) => setCashierReportPaymentMethod(e.target.value)}
+                  >
+                    <option value="">Barchasi</option>
+                    <option value="cash">Naqd pul</option>
+                    <option value="card">Karta</option>
+                  </select>
+                </label>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <TapButton
+                  type="button"
+                  className="rounded-xl bg-teal-500 px-5 py-2.5 text-sm font-semibold text-black"
+                  onClick={cashierFilterApplied ? resetCashierReportFilters : applyCashierReportFilters}
+                >
+                  {cashierFilterApplied ? "Tozalash" : "Filterlash"}
+                </TapButton>
+                <TapButton
+                  type="button"
+                  className="rounded-xl border border-white/15 bg-white/10 px-5 py-2.5 text-sm text-white/90"
+                  onClick={() => void fetchCashierReportsLog()}
+                  disabled={isCashierReportsLoading}
+                >
+                  Yangilash
+                </TapButton>
+              </div>
+              <label className="mt-3 block">
+                <span className="mb-1.5 block text-xs font-medium text-white/75">
+                  Bemor qidiruvi (ism/familiya) — avtomatik
+                </span>
+                <input
+                  className="w-full min-h-[48px] rounded-xl border border-white/15 bg-black/35 px-3 py-2.5 text-sm text-white outline-none"
+                  placeholder="Masalan: Ali Valiyev"
+                  value={cashierReportPatientQuery}
+                  onChange={(e) => setCashierReportPatientQuery(e.target.value)}
+                />
+              </label>
+            </div>
+
+            <div className="mb-4 text-sm text-white/70">
+              Natija: <strong className="text-teal-300">{cashierReportRows.length}</strong> ta tasdiqlangan xizmat
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border border-white/10">
+              <table className="min-w-full border-collapse text-sm">
+                <thead className="bg-white/5 text-white/70">
+                  <tr>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Sana/Vaqt</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Bemor</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Telefon</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Bo'lim</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">Xizmat</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-left font-semibold">To'lov turi</th>
+                    <th className="border-b border-white/10 px-3 py-2 text-right font-semibold">Narx</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cashierReportRows.length === 0 ? (
+                    <tr>
+                      <td className="px-3 py-3 text-white/55" colSpan={7}>
+                        {isCashierReportsLoading ? "Yuklanmoqda..." : "Filter bo'yicha tasdiqlangan xizmat topilmadi"}
+                      </td>
+                    </tr>
+                  ) : (
+                    cashierReportRows.map((row) => (
+                      <tr key={row.ticketId || `${row.createdAt}-${row.queueCode}`} className="odd:bg-black/20 even:bg-black/10">
+                        <td className="border-b border-white/10 px-3 py-2 whitespace-nowrap">
+                          {formatReportDateTime(row.createdAt, cashierReportsData?.timezone)}
+                        </td>
+                        <td className="border-b border-white/10 px-3 py-2">
+                          {[row.patientFirstName, row.patientLastName].filter(Boolean).join(" ") || "—"}
+                        </td>
+                        <td className="border-b border-white/10 px-3 py-2">{row.patientPhone || "—"}</td>
+                        <td className="border-b border-white/10 px-3 py-2">{getCashierReportDepartmentLabel(row) || "—"}</td>
+                        <td className="border-b border-white/10 px-3 py-2">{row.service || "—"}</td>
+                        <td className="border-b border-white/10 px-3 py-2 whitespace-nowrap">
+                          {formatPaymentMethodLabel(row.paymentMethod)}
+                        </td>
+                        <td className="border-b border-white/10 px-3 py-2 text-right text-teal-300 font-semibold whitespace-nowrap">
+                          {Number(row.price || 0).toLocaleString("uz-UZ")} so'm
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ) : null}
+        {activePage === PAGES.cashierPatients ? (
+          <section className="bg-white/5 border border-white/10 rounded-xl p-6 mb-6">
+            <div className="mb-5 flex flex-wrap items-end gap-3">
+              <label className="block flex-1 min-w-[260px]">
+                <span className="mb-1 block text-xs text-white/60">Bemor qidiruvi (ism/familiya)</span>
+                <input
+                  className="w-full rounded-lg border border-white/15 bg-black/35 px-3 py-2 text-sm text-white outline-none focus:border-teal-400/60"
+                  placeholder="Masalan: Ali Valiyev"
+                  value={cashierPatientsQuery}
+                  onChange={(e) => setCashierPatientsQuery(e.target.value)}
+                />
+              </label>
+              <TapButton
+                type="button"
+                className="rounded-lg bg-white/10 px-4 py-2 text-sm"
+                onClick={() => void fetchCashierPatients()}
+                disabled={isCashierPatientsLoading}
+              >
+                {isCashierPatientsLoading ? "Yuklanmoqda..." : "Yangilash"}
+              </TapButton>
+            </div>
+
+            {cashierPatientsData ? (
+              <div className="mb-4 flex flex-wrap gap-4 text-sm text-white/75">
+                <p>
+                  Bemorlar:{" "}
+                  <strong className="text-teal-300">{filteredCashierPatients.length}</strong>
+                </p>
+                <p>
+                  Tahlil qilingan xizmatlar:{" "}
+                  <strong className="text-teal-300">{cashierPatientsData.scannedOrders ?? 0}</strong>
+                </p>
+              </div>
+            ) : null}
+
+            <div className="grid grid-cols-1 gap-3">
+              {isCashierPatientsLoading && !cashierPatientsData ? (
+                <p className="text-sm text-white/55">Yuklanmoqda...</p>
+              ) : null}
+              {cashierPatientsData && Array.isArray(cashierPatientsData.patients) ? (
+                filteredCashierPatients.length === 0 ? (
+                  <p className="text-sm text-white/55">Kassa bo&apos;yicha bemorlar topilmadi.</p>
+                ) : (
+                  filteredCashierPatients.map((patient) => (
+                    <article key={patient.groupKey} className="rounded-xl border border-white/10 bg-black/25 p-4">
+                      <button
+                        type="button"
+                        className="w-full text-left"
+                        onClick={() =>
+                          setExpandedCashierPatients((prev) => ({
+                            ...prev,
+                            [patient.groupKey]: !prev[patient.groupKey]
+                          }))
+                        }
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div>
+                            <p className="text-base font-semibold text-white">
+                              {[patient.patientFirstName, patient.patientLastName].filter(Boolean).join(" ") || "Noma&apos;lum"}
+                            </p>
+                            <p className="text-xs text-white/55">{patient.patientPhone || "Telefon yo&apos;q"}</p>
+                          </div>
+                          <div className="text-right text-xs text-white/60">
+                            <p>Tashrif: {patient.visitCount || 0}</p>
+                            <p className="text-teal-300 font-semibold">
+                              {Number(patient.totalSpent || 0).toLocaleString("uz-UZ")} so&apos;m
+                            </p>
+                            <p className="text-white/50 mt-1">
+                              {expandedCashierPatients[patient.groupKey] ? "Yopish ▲" : "Pastga ochish ▼"}
+                            </p>
+                          </div>
+                        </div>
+                      </button>
+                      {expandedCashierPatients[patient.groupKey] ? (
+                        <div className="mt-3 space-y-1.5">
+                          {(patient.visits || []).map((visit) => (
+                            <div
+                              key={visit.ticketId || `${visit.createdAt}-${visit.queueCode}`}
+                              className="flex items-center justify-between rounded-lg bg-white/5 px-3 py-2 text-xs"
+                            >
+                              <div className="min-w-0">
+                                <p className="truncate text-white/90">
+                                  {visit.service || "Xizmat"} ({visit.queueCode || "—"})
+                                </p>
+                                <p className="text-white/50">
+                                  {formatReportDateTime(visit.createdAt, cashierPatientsData.timezone)}
+                                </p>
+                              </div>
+                              <p className="ml-3 whitespace-nowrap text-white/80">
+                                {Number(visit.price || 0).toLocaleString("uz-UZ")} so&apos;m
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </article>
+                  ))
+                )
+              ) : null}
             </div>
           </section>
         ) : null}
